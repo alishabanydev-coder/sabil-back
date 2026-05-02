@@ -1,7 +1,12 @@
 const express = require('express');
+const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
+const multer = require('multer');
+const path = require('path');
 const Admin = require('./models/admin.model');
+const Project = require('./models/project.model');
+const Video = require('./models/video.model');
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
@@ -9,6 +14,35 @@ const {
 } = require('./adminPermissions');
 
 const router = express.Router();
+const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
+
+const videoThumbnailUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(videoThumbnailUploadDir, { recursive: true });
+      callback(null, videoThumbnailUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Thumbnail must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
 
 function getJwtSecret() {
   return process.env.ADMIN_JWT_SECRET;
@@ -32,7 +66,7 @@ function normalizePermissions(permissions = []) {
       canUpdate: true,
       canDelete: true,
       projectIds:
-        permission.tab === 'projects' && Array.isArray(permission.projectIds)
+        permission.tab === 'channels' && Array.isArray(permission.projectIds)
           ? permission.projectIds.filter((projectId) =>
               mongoose.Types.ObjectId.isValid(projectId)
             )
@@ -143,6 +177,108 @@ function requireSuperAdmin(req, res, next) {
   }
 
   return next();
+}
+
+function getAdminPermission(admin, tab) {
+  if (admin?.role === ADMIN_ROLES.SUPER_ADMIN) {
+    return {
+      tab,
+      canRead: true,
+      canCreate: true,
+      canUpdate: true,
+      canDelete: true,
+      projectIds: [],
+    };
+  }
+
+  return (admin?.permissions || []).find((permission) => permission.tab === tab);
+}
+
+function hasChannelProjectAccess(admin, projectId) {
+  if (admin?.role === ADMIN_ROLES.SUPER_ADMIN) {
+    return true;
+  }
+
+  const permission = getAdminPermission(admin, 'channels');
+  const projectIds = permission?.projectIds || [];
+
+  return projectIds.some((allowedProjectId) => allowedProjectId.toString() === projectId);
+}
+
+function requireChannelProjectAccess(req, res, next) {
+  const { projectId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(projectId)) {
+    return res.status(400).json({
+      message: 'Invalid project id.',
+    });
+  }
+
+  if (!hasChannelProjectAccess(req.admin, projectId)) {
+    return res.status(403).json({
+      message: 'Admin access is required for this channel project.',
+    });
+  }
+
+  return next();
+}
+
+function uploadVideoThumbnail(req, res, next) {
+  videoThumbnailUpload.single('thumbnail')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
+function deleteUploadedFile(file) {
+  if (!file?.path) {
+    return;
+  }
+
+  fs.unlink(file.path, () => {});
+}
+
+function deleteStoredUpload(uploadPath) {
+  if (typeof uploadPath !== 'string' || !uploadPath.startsWith('/uploads/')) {
+    return;
+  }
+
+  const normalizedRelativePath = uploadPath.replace(/^\/uploads\//, '');
+  const absolutePath = path.join(__dirname, 'uploads', normalizedRelativePath);
+  const uploadsRoot = path.join(__dirname, 'uploads');
+
+  if (!absolutePath.startsWith(uploadsRoot)) {
+    return;
+  }
+
+  fs.unlink(absolutePath, () => {});
+}
+
+function hasPermission(admin, tab, action) {
+  const permission = getAdminPermission(admin, tab);
+
+  if (!permission) {
+    return false;
+  }
+
+  return Boolean(permission[`can${action[0].toUpperCase()}${action.slice(1)}`]);
+}
+
+function requireTabPermission(tab, action) {
+  return (req, res, next) => {
+    if (!hasPermission(req.admin, tab, action)) {
+      return res.status(403).json({
+        message: `Admin ${action} access is required for ${tab}.`,
+      });
+    }
+
+    return next();
+  };
 }
 
 router.post('/login', async (req, res) => {
@@ -357,5 +493,364 @@ router.delete('/admins/:id', authenticateAdmin, requireSuperAdmin, async (req, r
     message: 'Admin deleted.',
   });
 });
+
+router.get(
+  '/projects',
+  authenticateAdmin,
+  requireSuperAdmin,
+  async (req, res) => {
+    const projects = await Project.find({}).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      projects,
+    });
+  }
+);
+
+router.get(
+  '/channels/projects',
+  authenticateAdmin,
+  requireTabPermission('channels', 'read'),
+  async (req, res) => {
+    const permission = getAdminPermission(req.admin, 'channels');
+    const projectIds = permission?.projectIds || [];
+    const filter =
+      req.admin.role === ADMIN_ROLES.SUPER_ADMIN
+        ? {}
+        : { _id: { $in: projectIds } };
+
+    const projects = await Project.find(filter).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      projects,
+    });
+  }
+);
+
+router.get(
+  '/channels/projects/:projectId/videos',
+  authenticateAdmin,
+  requireTabPermission('channels', 'read'),
+  requireChannelProjectAccess,
+  async (req, res) => {
+    const { projectId } = req.params;
+    const videos = await Video.find({ projectId }).sort({
+      season: 1,
+      episode: 1,
+      createdAt: -1,
+    });
+
+    return res.status(200).json({
+      videos,
+    });
+  }
+);
+
+router.post(
+  '/channels/projects/:projectId/videos',
+  authenticateAdmin,
+  requireTabPermission('channels', 'create'),
+  requireChannelProjectAccess,
+  uploadVideoThumbnail,
+  async (req, res) => {
+    const { projectId } = req.params;
+    const { title, description, url, videoUrl, season, episode } = req.body || {};
+
+    const videoUrlValue = typeof url === 'string' ? url : videoUrl;
+    const parsedSeason = Number(season);
+    const parsedEpisode = Number(episode);
+
+    if (
+      typeof title !== 'string' ||
+      typeof description !== 'string' ||
+      typeof videoUrlValue !== 'string' ||
+      !req.file ||
+      !title.trim() ||
+      !description.trim() ||
+      !videoUrlValue.trim() ||
+      !Number.isInteger(parsedSeason) ||
+      !Number.isInteger(parsedEpisode) ||
+      parsedSeason < 1 ||
+      parsedEpisode < 1
+    ) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message:
+          'Video title, description, URL, thumbnail, season, and episode are required.',
+      });
+    }
+
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      deleteUploadedFile(req.file);
+
+      return res.status(404).json({
+        message: 'Project not found.',
+      });
+    }
+
+    const existingVideo = await Video.findOne({
+      projectId,
+      season: parsedSeason,
+      episode: parsedEpisode,
+    });
+
+    if (existingVideo) {
+      deleteUploadedFile(req.file);
+
+      return res.status(409).json({
+        message: `Season ${parsedSeason}, episode ${parsedEpisode} already exists for this project.`,
+      });
+    }
+
+    try {
+      const video = await Video.create({
+        title,
+        description,
+        url: videoUrlValue,
+        thumbnail: `/uploads/video-thumbnails/${req.file.filename}`,
+        projectId,
+        season: parsedSeason,
+        episode: parsedEpisode,
+      });
+
+      return res.status(201).json({
+        video,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message:
+          error.code === 11000
+            ? `Season ${parsedSeason}, episode ${parsedEpisode} already exists for this project.`
+            : error.message,
+      });
+    }
+  }
+);
+
+router.patch(
+  '/channels/projects/:projectId/videos/:videoId',
+  authenticateAdmin,
+  requireTabPermission('channels', 'update'),
+  requireChannelProjectAccess,
+  uploadVideoThumbnail,
+  async (req, res) => {
+    const { projectId, videoId } = req.params;
+    const { title, description, url, videoUrl, thumbnail, season, episode } =
+      req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(videoId)) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Invalid video id.',
+      });
+    }
+
+    const videoUrlValue = typeof url === 'string' ? url : videoUrl;
+    const parsedSeason = Number(season);
+    const parsedEpisode = Number(episode);
+
+    if (
+      typeof title !== 'string' ||
+      typeof description !== 'string' ||
+      typeof videoUrlValue !== 'string' ||
+      !title.trim() ||
+      !description.trim() ||
+      !videoUrlValue.trim() ||
+      !Number.isInteger(parsedSeason) ||
+      !Number.isInteger(parsedEpisode) ||
+      parsedSeason < 1 ||
+      parsedEpisode < 1
+    ) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Video title, description, URL, season, and episode are required.',
+      });
+    }
+
+    const video = await Video.findOne({ _id: videoId, projectId });
+
+    if (!video) {
+      deleteUploadedFile(req.file);
+
+      return res.status(404).json({
+        message: 'Video not found.',
+      });
+    }
+
+    const existingVideo = await Video.findOne({
+      _id: { $ne: videoId },
+      projectId,
+      season: parsedSeason,
+      episode: parsedEpisode,
+    });
+
+    if (existingVideo) {
+      deleteUploadedFile(req.file);
+
+      return res.status(409).json({
+        message: `Season ${parsedSeason}, episode ${parsedEpisode} already exists for this project.`,
+      });
+    }
+
+    const nextThumbnail = req.file
+      ? `/uploads/video-thumbnails/${req.file.filename}`
+      : typeof thumbnail === 'string' && thumbnail.startsWith('/uploads/')
+        ? thumbnail
+        : video.thumbnail;
+
+    try {
+      video.title = title;
+      video.description = description;
+      video.url = videoUrlValue;
+      video.thumbnail = nextThumbnail;
+      video.season = parsedSeason;
+      video.episode = parsedEpisode;
+
+      await video.save();
+
+      return res.status(200).json({
+        video,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message:
+          error.code === 11000
+            ? `Season ${parsedSeason}, episode ${parsedEpisode} already exists for this project.`
+            : error.message,
+      });
+    }
+  }
+);
+
+router.post(
+  '/projects',
+  authenticateAdmin,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { name, thumbnail, description } = req.body || {};
+
+    if (
+      typeof name !== 'string' ||
+      typeof thumbnail !== 'string' ||
+      typeof description !== 'string'
+    ) {
+      return res.status(400).json({
+        message: 'Project name, thumbnail, and description are required.',
+      });
+    }
+
+    try {
+      const project = await Project.create({
+        name,
+        thumbnail,
+        description,
+      });
+
+      return res.status(201).json({
+        project,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.patch(
+  '/projects/:id',
+  authenticateAdmin,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid project id.',
+      });
+    }
+
+    const updates = {};
+    const { name, thumbnail, description } = req.body || {};
+
+    if (typeof name === 'string') {
+      updates.name = name;
+    }
+
+    if (typeof thumbnail === 'string') {
+      updates.thumbnail = thumbnail;
+    }
+
+    if (typeof description === 'string') {
+      updates.description = description;
+    }
+
+    try {
+      const project = await Project.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true,
+      });
+
+      if (!project) {
+        return res.status(404).json({
+          message: 'Project not found.',
+        });
+      }
+
+      return res.status(200).json({
+        project,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/projects/:id',
+  authenticateAdmin,
+  requireSuperAdmin,
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid project id.',
+      });
+    }
+
+    const project = await Project.findById(id);
+
+    if (!project) {
+      return res.status(404).json({
+        message: 'Project not found.',
+      });
+    }
+
+    const videos = await Video.find({ projectId: id });
+
+    await Video.deleteMany({ projectId: id });
+    await project.deleteOne();
+
+    videos.forEach((video) => {
+      deleteStoredUpload(video.thumbnail);
+    });
+
+    return res.status(200).json({
+      message: 'Project and related videos deleted.',
+    });
+  }
+);
 
 module.exports = router;

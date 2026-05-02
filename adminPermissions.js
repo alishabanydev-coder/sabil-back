@@ -10,12 +10,15 @@ const ADMIN_TABS = [
   'blog',
   'comments',
   'projects',
+  'channels',
   'users',
   'socialMedia',
   'admins',
 ];
 
-const GRANTABLE_ADMIN_TABS = ADMIN_TABS.filter((tab) => tab !== 'admins');
+const GRANTABLE_ADMIN_TABS = ADMIN_TABS.filter(
+  (tab) => !['admins', 'projects'].includes(tab)
+);
 
 const CRUD_ACTIONS = ['read', 'create', 'update', 'delete'];
 

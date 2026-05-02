@@ -24,6 +24,11 @@ const videoSchema = new Schema(
       required: true,
       trim: true,
     },
+    thumbnail: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     projectId: {
       type: Schema.Types.ObjectId,
       ref: 'Project',
@@ -42,7 +47,7 @@ const videoSchema = new Schema(
   schemaOptions
 );
 
-videoSchema.index({ projectId: 1, season: 1, episode: 1 });
+videoSchema.index({ projectId: 1, season: 1, episode: 1 }, { unique: true });
 videoSchema.index({ title: 1 });
 
 module.exports = mongoose.model('Video', videoSchema);
