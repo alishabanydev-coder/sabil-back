@@ -7,6 +7,8 @@ const path = require('path');
 const Admin = require('./models/admin.model');
 const Project = require('./models/project.model');
 const Video = require('./models/video.model');
+const Banner = require('./models/banner.model');
+const ProjectBreakDown = require('./models/projectBreakDown.model');
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
@@ -15,6 +17,7 @@ const {
 
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
+const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
 
 const videoThumbnailUpload = multer({
   storage: multer.diskStorage({
@@ -37,6 +40,34 @@ const videoThumbnailUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Thumbnail must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const bannerPosterUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(bannerPosterUploadDir, { recursive: true });
+      callback(null, bannerPosterUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Banner poster must be an image file.'));
       return;
     }
 
@@ -225,6 +256,18 @@ function requireChannelProjectAccess(req, res, next) {
 
 function uploadVideoThumbnail(req, res, next) {
   videoThumbnailUpload.single('thumbnail')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
+function uploadBannerPoster(req, res, next) {
+  bannerPosterUpload.single('poster')(req, res, (error) => {
     if (!error) {
       return next();
     }
@@ -706,6 +749,8 @@ router.patch(
         : video.thumbnail;
 
     try {
+      const previousThumbnail = video.thumbnail;
+
       video.title = title;
       video.description = description;
       video.url = videoUrlValue;
@@ -714,6 +759,9 @@ router.patch(
       video.episode = parsedEpisode;
 
       await video.save();
+      if (req.file && previousThumbnail !== nextThumbnail) {
+        deleteStoredUpload(previousThumbnail);
+      }
 
       return res.status(200).json({
         video,
@@ -728,6 +776,199 @@ router.patch(
             : error.message,
       });
     }
+  }
+);
+
+router.delete(
+  '/channels/projects/:projectId/videos/:videoId',
+  authenticateAdmin,
+  requireTabPermission('channels', 'delete'),
+  requireChannelProjectAccess,
+  async (req, res) => {
+    const { projectId, videoId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(videoId)) {
+      return res.status(400).json({
+        message: 'Invalid video id.',
+      });
+    }
+
+    const video = await Video.findOneAndDelete({ _id: videoId, projectId });
+
+    if (!video) {
+      return res.status(404).json({
+        message: 'Video not found.',
+      });
+    }
+
+    deleteStoredUpload(video.thumbnail);
+
+    return res.status(200).json({
+      message: 'Video deleted.',
+    });
+  }
+);
+
+router.get(
+  '/breakdowns',
+  authenticateAdmin,
+  requireTabPermission('breakdowns', 'read'),
+  async (_req, res) => {
+    const breakdowns = await ProjectBreakDown.find({}).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      breakdowns,
+    });
+  }
+);
+
+router.post(
+  '/breakdowns',
+  authenticateAdmin,
+  requireTabPermission('breakdowns', 'create'),
+  async (req, res) => {
+    const { projectId, title, content, videoUrl } = req.body || {};
+
+    if (
+      !mongoose.Types.ObjectId.isValid(projectId) ||
+      typeof title !== 'string' ||
+      typeof content !== 'string' ||
+      !title.trim() ||
+      !content.trim()
+    ) {
+      return res.status(400).json({
+        message: 'Project, title, and content are required.',
+      });
+    }
+
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      return res.status(404).json({
+        message: 'Project not found.',
+      });
+    }
+
+    try {
+      const breakdown = await ProjectBreakDown.create({
+        projectId,
+        title: title.trim(),
+        content: content.trim(),
+        ...(typeof videoUrl === 'string' && videoUrl.trim()
+          ? { videoUrl: videoUrl.trim() }
+          : {}),
+      });
+
+      return res.status(201).json({
+        breakdown,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.get(
+  '/banner',
+  authenticateAdmin,
+  requireTabPermission('banner', 'read'),
+  async (_req, res) => {
+    const banners = await Banner.find({ isActive: true }).sort({ updatedAt: -1 });
+
+    return res.status(200).json({
+      banners,
+    });
+  }
+);
+
+router.post(
+  '/banner',
+  authenticateAdmin,
+  requireTabPermission('banner', 'create'),
+  uploadBannerPoster,
+  async (req, res) => {
+    const { title } = req.body || {};
+
+    if (typeof title !== 'string' || !title.trim() || !req.file) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Banner title and poster are required.',
+      });
+    }
+
+    const nextPoster = `/uploads/banners/${req.file.filename}`;
+
+    try {
+      const banner = await Banner.create({
+        title: title.trim(),
+        poster: nextPoster,
+        isActive: true,
+      });
+
+      return res.status(201).json({
+        banner,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/banner/:id',
+  authenticateAdmin,
+  requireTabPermission('banner', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid banner id.',
+      });
+    }
+
+    const banner = await Banner.findByIdAndDelete(id);
+
+    if (!banner) {
+      return res.status(404).json({
+        message: 'Banner not found.',
+      });
+    }
+
+    deleteStoredUpload(banner.poster);
+
+    return res.status(200).json({
+      message: 'Banner deleted.',
+    });
+  }
+);
+
+router.delete(
+  '/banner',
+  authenticateAdmin,
+  requireTabPermission('banner', 'delete'),
+  async (_req, res) => {
+    const banner = await Banner.findOne({ isActive: true }).sort({ updatedAt: -1 });
+
+    if (!banner) {
+      return res.status(404).json({
+        message: 'Banner not found.',
+      });
+    }
+
+    await banner.deleteOne();
+    deleteStoredUpload(banner.poster);
+
+    return res.status(200).json({
+      message: 'Banner deleted.',
+    });
   }
 );
 
