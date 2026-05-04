@@ -7,6 +7,7 @@ const path = require('path');
 const Admin = require('./models/admin.model');
 const Project = require('./models/project.model');
 const Video = require('./models/video.model');
+const Blog = require('./models/blog.model');
 const Banner = require('./models/banner.model');
 const ProjectBreakDown = require('./models/projectBreakDown.model');
 const {
@@ -18,6 +19,7 @@ const {
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
 const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
+const blogImageUploadDir = path.join(__dirname, 'uploads', 'blog-images');
 
 const videoThumbnailUpload = multer({
   storage: multer.diskStorage({
@@ -68,6 +70,35 @@ const bannerPosterUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Banner poster must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const blogImageUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(blogImageUploadDir, { recursive: true });
+      callback(null, blogImageUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+    files: 12,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Blog images must be image files.'));
       return;
     }
 
@@ -278,12 +309,36 @@ function uploadBannerPoster(req, res, next) {
   });
 }
 
+function uploadBlogImages(req, res, next) {
+  blogImageUpload.array('images', 12)(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
 function deleteUploadedFile(file) {
   if (!file?.path) {
     return;
   }
 
   fs.unlink(file.path, () => {});
+}
+
+function deleteUploadedFiles(files) {
+  if (!Array.isArray(files)) {
+    return;
+  }
+
+  files.forEach((file) => {
+    if (file?.path) {
+      fs.unlink(file.path, () => {});
+    }
+  });
 }
 
 function deleteStoredUpload(uploadPath) {
@@ -822,6 +877,82 @@ router.get(
   }
 );
 
+router.get(
+  '/blogs',
+  authenticateAdmin,
+  requireTabPermission('blog', 'read'),
+  async (_req, res) => {
+    const blogs = await Blog.find({}).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      blogs,
+    });
+  }
+);
+
+router.post(
+  '/blogs',
+  authenticateAdmin,
+  requireTabPermission('blog', 'create'),
+  uploadBlogImages,
+  async (req, res) => {
+    const { title, subHeader, videoUrl, texts } = req.body || {};
+    const parsedTexts =
+      typeof texts === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(texts);
+            } catch {
+              return null;
+            }
+          })()
+        : [];
+    const normalizedTexts = Array.isArray(parsedTexts)
+      ? parsedTexts
+          .filter((textItem) => typeof textItem === 'string')
+          .map((textItem) => textItem.trim())
+          .filter(Boolean)
+      : [];
+
+    if (typeof title !== 'string' || !title.trim() || normalizedTexts.length === 0) {
+      deleteUploadedFiles(req.files);
+
+      return res.status(400).json({
+        message: 'Title and at least one text block are required.',
+      });
+    }
+
+    const images = Array.isArray(req.files)
+      ? req.files.map((file) => `/uploads/blog-images/${file.filename}`)
+      : [];
+
+    try {
+      const blog = await Blog.create({
+        title: title.trim(),
+        ...(typeof subHeader === 'string' && subHeader.trim()
+          ? { subHeader: subHeader.trim() }
+          : {}),
+        content: normalizedTexts.join('\n\n'),
+        textSections: normalizedTexts,
+        image: images,
+        ...(typeof videoUrl === 'string' && videoUrl.trim()
+          ? { videoUrl: videoUrl.trim() }
+          : {}),
+      });
+
+      return res.status(201).json({
+        blog,
+      });
+    } catch (error) {
+      deleteUploadedFiles(req.files);
+
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
 router.post(
   '/breakdowns',
   authenticateAdmin,
@@ -867,6 +998,103 @@ router.post(
         message: error.message,
       });
     }
+  }
+);
+
+router.put(
+  '/breakdowns/:id',
+  authenticateAdmin,
+  requireTabPermission('breakdowns', 'update'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { projectId, title, content, videoUrl } = req.body || {};
+
+    if (
+      !mongoose.Types.ObjectId.isValid(id) ||
+      !mongoose.Types.ObjectId.isValid(projectId) ||
+      typeof title !== 'string' ||
+      typeof content !== 'string' ||
+      !title.trim() ||
+      !content.trim()
+    ) {
+      return res.status(400).json({
+        message: 'Breakdown id, project, title, and content are required.',
+      });
+    }
+
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      return res.status(404).json({
+        message: 'Project not found.',
+      });
+    }
+
+    try {
+      const updateDocument = {
+        $set: {
+          projectId,
+          title: title.trim(),
+          content: content.trim(),
+        },
+      };
+
+      if (typeof videoUrl === 'string' && videoUrl.trim()) {
+        updateDocument.$set.videoUrl = videoUrl.trim();
+      } else {
+        updateDocument.$unset = { videoUrl: 1 };
+      }
+
+      const breakdown = await ProjectBreakDown.findByIdAndUpdate(
+        id,
+        updateDocument,
+        {
+          new: true,
+          runValidators: true,
+        }
+      );
+
+      if (!breakdown) {
+        return res.status(404).json({
+          message: 'Breakdown not found.',
+        });
+      }
+
+      return res.status(200).json({
+        breakdown,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/breakdowns/:id',
+  authenticateAdmin,
+  requireTabPermission('breakdowns', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid breakdown id.',
+      });
+    }
+
+    const breakdown = await ProjectBreakDown.findByIdAndDelete(id);
+
+    if (!breakdown) {
+      return res.status(404).json({
+        message: 'Breakdown not found.',
+      });
+    }
+
+    return res.status(200).json({
+      message: 'Breakdown deleted.',
+    });
   }
 );
 
