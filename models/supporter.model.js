@@ -12,46 +12,6 @@ const supporterSchema = new Schema(
       type: String,
       required: true,
       trim: true,
-      maxlength: 120,
-    },
-    email: {
-      type: String,
-      trim: true,
-      lowercase: true,
-      maxlength: 254,
-    },
-    message: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 5000,
-    },
-    phoneNumbers: {
-      type: [String],
-      default: [],
-    },
-  },
-  schemaOptions
-);
-
-supporterSchema.index({ createdAt: -1 });
-supporterSchema.index({ email: 1 });
-
-module.exports = mongoose.model('Supporter', supporterSchema);
-const mongoose = require('mongoose');
-
-const { Schema } = mongoose;
-
-const schemaOptions = {
-  timestamps: true,
-};
-
-const supporterSchema = new Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
       maxlength: 140,
     },
     email: {

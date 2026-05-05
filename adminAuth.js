@@ -8,8 +8,11 @@ const Admin = require('./models/admin.model');
 const Project = require('./models/project.model');
 const Video = require('./models/video.model');
 const Blog = require('./models/blog.model');
+const Comment = require('./models/comment.model');
 const Banner = require('./models/banner.model');
 const ProjectBreakDown = require('./models/projectBreakDown.model');
+const SiteSettings = require('./models/siteSettings.model');
+const Supporter = require('./models/supporter.model');
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
@@ -20,6 +23,7 @@ const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
 const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
 const blogImageUploadDir = path.join(__dirname, 'uploads', 'blog-images');
+const socialMediaIconUploadDir = path.join(__dirname, 'uploads', 'social-media-icons');
 
 const videoThumbnailUpload = multer({
   storage: multer.diskStorage({
@@ -99,6 +103,34 @@ const blogImageUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Blog images must be image files.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const socialMediaIconUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(socialMediaIconUploadDir, { recursive: true });
+      callback(null, socialMediaIconUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Social media icon must be an image file.'));
       return;
     }
 
@@ -321,6 +353,18 @@ function uploadBlogImages(req, res, next) {
   });
 }
 
+function uploadSocialMediaIcon(req, res, next) {
+  socialMediaIconUpload.single('icon')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
 function deleteUploadedFile(file) {
   if (!file?.path) {
     return;
@@ -355,6 +399,58 @@ function deleteStoredUpload(uploadPath) {
   }
 
   fs.unlink(absolutePath, () => {});
+}
+
+function normalizeBlogImagePath(imagePath) {
+  if (typeof imagePath !== 'string' || !imagePath.trim()) {
+    return null;
+  }
+
+  const trimmedPath = imagePath.trim();
+  if (trimmedPath.startsWith('/uploads/')) {
+    return trimmedPath;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedPath);
+    if (parsedUrl.pathname.startsWith('/uploads/')) {
+      return parsedUrl.pathname;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function getOrCreateSiteSettings() {
+  const siteSettings = await SiteSettings.findOneAndUpdate(
+    { singletonKey: 'main' },
+    { $setOnInsert: { singletonKey: 'main' } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  return siteSettings;
+}
+
+const COMMENT_TARGET_MODELS = {
+  video: Video,
+  blog: Blog,
+  breakdown: ProjectBreakDown,
+};
+
+function normalizeCommentTargetType(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+async function commentTargetExists(targetType, targetId) {
+  const model = COMMENT_TARGET_MODELS[targetType];
+  if (!model) {
+    return false;
+  }
+
+  const target = await model.findById(targetId).select('_id');
+  return Boolean(target);
 }
 
 function hasPermission(admin, tab, action) {
@@ -896,29 +992,14 @@ router.post(
   requireTabPermission('blog', 'create'),
   uploadBlogImages,
   async (req, res) => {
-    const { title, subHeader, videoUrl, texts } = req.body || {};
-    const parsedTexts =
-      typeof texts === 'string'
-        ? (() => {
-            try {
-              return JSON.parse(texts);
-            } catch {
-              return null;
-            }
-          })()
-        : [];
-    const normalizedTexts = Array.isArray(parsedTexts)
-      ? parsedTexts
-          .filter((textItem) => typeof textItem === 'string')
-          .map((textItem) => textItem.trim())
-          .filter(Boolean)
-      : [];
+    const { title, subHeader, videoUrl, content } = req.body || {};
+    const normalizedContent = typeof content === 'string' ? content.trim() : '';
 
-    if (typeof title !== 'string' || !title.trim() || normalizedTexts.length === 0) {
+    if (typeof title !== 'string' || !title.trim() || !normalizedContent) {
       deleteUploadedFiles(req.files);
 
       return res.status(400).json({
-        message: 'Title and at least one text block are required.',
+        message: 'Title and content are required.',
       });
     }
 
@@ -932,8 +1013,7 @@ router.post(
         ...(typeof subHeader === 'string' && subHeader.trim()
           ? { subHeader: subHeader.trim() }
           : {}),
-        content: normalizedTexts.join('\n\n'),
-        textSections: normalizedTexts,
+        content: normalizedContent,
         image: images,
         ...(typeof videoUrl === 'string' && videoUrl.trim()
           ? { videoUrl: videoUrl.trim() }
@@ -950,6 +1030,485 @@ router.post(
         message: error.message,
       });
     }
+  }
+);
+
+router.put(
+  '/blogs/:id',
+  authenticateAdmin,
+  requireTabPermission('blog', 'update'),
+  uploadBlogImages,
+  async (req, res) => {
+    const { id } = req.params;
+    const { title, subHeader, videoUrl, content, keepImages } = req.body || {};
+    const normalizedContent = typeof content === 'string' ? content.trim() : '';
+    const parsedKeepImages =
+      typeof keepImages === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(keepImages);
+            } catch {
+              return null;
+            }
+          })()
+        : [];
+    const normalizedKeptImages = Array.isArray(parsedKeepImages)
+      ? parsedKeepImages
+          .map((imagePath) => normalizeBlogImagePath(imagePath))
+          .filter(Boolean)
+      : [];
+
+    if (
+      !mongoose.Types.ObjectId.isValid(id) ||
+      typeof title !== 'string' ||
+      !title.trim() ||
+      !normalizedContent
+    ) {
+      deleteUploadedFiles(req.files);
+
+      return res.status(400).json({
+        message: 'Blog id, title, and content are required.',
+      });
+    }
+
+    try {
+      const blog = await Blog.findById(id);
+
+      if (!blog) {
+        deleteUploadedFiles(req.files);
+
+        return res.status(404).json({
+          message: 'Blog not found.',
+        });
+      }
+
+      const uploadedImages = Array.isArray(req.files)
+        ? req.files.map((file) => `/uploads/blog-images/${file.filename}`)
+        : [];
+      const nextImages = [...normalizedKeptImages, ...uploadedImages];
+
+      blog.title = title.trim();
+      blog.content = normalizedContent;
+
+      if (typeof subHeader === 'string' && subHeader.trim()) {
+        blog.subHeader = subHeader.trim();
+      } else {
+        blog.subHeader = undefined;
+      }
+
+      if (typeof videoUrl === 'string' && videoUrl.trim()) {
+        blog.videoUrl = videoUrl.trim();
+      } else {
+        blog.videoUrl = undefined;
+      }
+
+      const previousImages = Array.isArray(blog.image) ? blog.image : [];
+      blog.image = nextImages;
+      previousImages
+        .filter((imagePath) => !nextImages.includes(imagePath))
+        .forEach((imagePath) => {
+          deleteStoredUpload(imagePath);
+        });
+
+      await blog.save();
+
+      return res.status(200).json({
+        blog,
+      });
+    } catch (error) {
+      deleteUploadedFiles(req.files);
+
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/blogs/:id',
+  authenticateAdmin,
+  requireTabPermission('blog', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid blog id.',
+      });
+    }
+
+    const blog = await Blog.findByIdAndDelete(id);
+
+    if (!blog) {
+      return res.status(404).json({
+        message: 'Blog not found.',
+      });
+    }
+
+    const images = Array.isArray(blog.image) ? blog.image : [];
+    images.forEach((imagePath) => {
+      deleteStoredUpload(imagePath);
+    });
+
+    return res.status(200).json({
+      message: 'Blog deleted.',
+    });
+  }
+);
+
+router.post(
+  '/comments',
+  authenticateAdmin,
+  requireTabPermission('comments', 'create'),
+  async (req, res) => {
+    const { text, username, targetType, targetId, parentCommentId } = req.body || {};
+    const normalizedText = typeof text === 'string' ? text.trim() : '';
+    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+    const normalizedTargetType = normalizeCommentTargetType(targetType);
+
+    if (
+      !normalizedText ||
+      !normalizedUsername ||
+      !mongoose.Types.ObjectId.isValid(targetId) ||
+      !Object.hasOwn(COMMENT_TARGET_MODELS, normalizedTargetType)
+    ) {
+      return res.status(400).json({
+        message: 'Text, username, target type, and target id are required.',
+      });
+    }
+
+    if (!(await commentTargetExists(normalizedTargetType, targetId))) {
+      return res.status(404).json({
+        message: 'Comment target not found.',
+      });
+    }
+
+    let normalizedParentCommentId = null;
+    if (parentCommentId !== undefined && parentCommentId !== null && parentCommentId !== '') {
+      if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
+        return res.status(400).json({
+          message: 'Invalid parent comment id.',
+        });
+      }
+
+      const parentComment = await Comment.findById(parentCommentId);
+      if (!parentComment) {
+        return res.status(404).json({
+          message: 'Parent comment not found.',
+        });
+      }
+
+      if (
+        parentComment.targetType !== normalizedTargetType ||
+        parentComment.targetId.toString() !== targetId
+      ) {
+        return res.status(400).json({
+          message: 'Parent comment target does not match this comment target.',
+        });
+      }
+
+      normalizedParentCommentId = parentComment._id;
+    }
+
+    try {
+      const comment = await Comment.create({
+        text: normalizedText,
+        username: normalizedUsername,
+        targetType: normalizedTargetType,
+        targetId,
+        parentCommentId: normalizedParentCommentId,
+      });
+
+      return res.status(201).json({
+        comment,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.get(
+  '/comments',
+  authenticateAdmin,
+  requireTabPermission('comments', 'read'),
+  async (req, res) => {
+    const { targetType, username } = req.query || {};
+    const filter = {};
+
+    if (typeof targetType === 'string' && targetType.trim()) {
+      const normalizedTargetType = normalizeCommentTargetType(targetType);
+      if (!Object.hasOwn(COMMENT_TARGET_MODELS, normalizedTargetType)) {
+        return res.status(400).json({
+          message: 'Invalid target type filter.',
+        });
+      }
+
+      filter.targetType = normalizedTargetType;
+    }
+
+    if (typeof username === 'string' && username.trim()) {
+      filter.username = {
+        $regex: username.trim(),
+        $options: 'i',
+      };
+    }
+
+    const comments = await Comment.find(filter).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      comments,
+    });
+  }
+);
+
+router.put(
+  '/comments/:id',
+  authenticateAdmin,
+  requireTabPermission('comments', 'update'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { text, username, targetType, targetId, parentCommentId } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid comment id.',
+      });
+    }
+
+    const comment = await Comment.findById(id);
+    if (!comment) {
+      return res.status(404).json({
+        message: 'Comment not found.',
+      });
+    }
+
+    const hasText = typeof text === 'string';
+    const hasUsername = typeof username === 'string';
+    const hasTargetType = typeof targetType === 'string';
+    const hasTargetId = typeof targetId === 'string';
+    const hasParentCommentId = Object.prototype.hasOwnProperty.call(req.body || {}, 'parentCommentId');
+
+    const nextText = hasText ? text.trim() : comment.text;
+    const nextUsername = hasUsername ? username.trim() : comment.username;
+    const nextTargetType = hasTargetType
+      ? normalizeCommentTargetType(targetType)
+      : comment.targetType;
+    const nextTargetId = hasTargetId ? targetId : comment.targetId.toString();
+
+    if (!nextText || !nextUsername) {
+      return res.status(400).json({
+        message: 'Text and username cannot be empty.',
+      });
+    }
+
+    if (!Object.hasOwn(COMMENT_TARGET_MODELS, nextTargetType)) {
+      return res.status(400).json({
+        message: 'Invalid target type.',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(nextTargetId)) {
+      return res.status(400).json({
+        message: 'Invalid target id.',
+      });
+    }
+
+    if (!(await commentTargetExists(nextTargetType, nextTargetId))) {
+      return res.status(404).json({
+        message: 'Comment target not found.',
+      });
+    }
+
+    let nextParentCommentId = comment.parentCommentId;
+    if (hasParentCommentId) {
+      const normalizedParentValue =
+        parentCommentId === '' || parentCommentId === null ? null : parentCommentId;
+
+      if (normalizedParentValue === null) {
+        nextParentCommentId = null;
+      } else {
+        if (!mongoose.Types.ObjectId.isValid(normalizedParentValue)) {
+          return res.status(400).json({
+            message: 'Invalid parent comment id.',
+          });
+        }
+
+        if (normalizedParentValue === id) {
+          return res.status(400).json({
+            message: 'A comment cannot be its own parent.',
+          });
+        }
+
+        const parentComment = await Comment.findById(normalizedParentValue);
+        if (!parentComment) {
+          return res.status(404).json({
+            message: 'Parent comment not found.',
+          });
+        }
+
+        if (
+          parentComment.targetType !== nextTargetType ||
+          parentComment.targetId.toString() !== nextTargetId
+        ) {
+          return res.status(400).json({
+            message: 'Parent comment target does not match this comment target.',
+          });
+        }
+
+        nextParentCommentId = parentComment._id;
+      }
+    } else if (
+      comment.parentCommentId &&
+      (hasTargetType || hasTargetId) &&
+      (await Comment.findById(comment.parentCommentId).select('_id targetType targetId').then(
+        (parentComment) =>
+          parentComment &&
+          (parentComment.targetType !== nextTargetType ||
+            parentComment.targetId.toString() !== nextTargetId)
+      ))
+    ) {
+      return res.status(400).json({
+        message:
+          'Changing target type or target id requires updating parent comment id as well.',
+      });
+    }
+
+    try {
+      comment.text = nextText;
+      comment.username = nextUsername;
+      comment.targetType = nextTargetType;
+      comment.targetId = nextTargetId;
+      comment.parentCommentId = nextParentCommentId;
+
+      await comment.save();
+
+      return res.status(200).json({
+        comment,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/comments/:id',
+  authenticateAdmin,
+  requireTabPermission('comments', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid comment id.',
+      });
+    }
+
+    const comment = await Comment.findByIdAndDelete(id);
+
+    if (!comment) {
+      return res.status(404).json({
+        message: 'Comment not found.',
+      });
+    }
+
+    await Comment.deleteMany({ parentCommentId: id });
+
+    return res.status(200).json({
+      message: 'Comment deleted.',
+    });
+  }
+);
+
+router.get(
+  '/supporters',
+  authenticateAdmin,
+  requireTabPermission('users', 'read'),
+  async (_req, res) => {
+    const supporters = await Supporter.find({}).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      supporters,
+    });
+  }
+);
+
+router.post(
+  '/supporters',
+  authenticateAdmin,
+  requireTabPermission('users', 'create'),
+  async (req, res) => {
+    const { name, email, message, phoneNumbers } = req.body || {};
+    const normalizedName = typeof name === 'string' ? name.trim() : '';
+    const normalizedMessage = typeof message === 'string' ? message.trim() : '';
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const normalizedPhoneNumbers = Array.isArray(phoneNumbers)
+      ? phoneNumbers
+          .filter((phoneNumber) => typeof phoneNumber === 'string')
+          .map((phoneNumber) => phoneNumber.trim())
+          .filter(Boolean)
+      : typeof phoneNumbers === 'string'
+      ? phoneNumbers
+          .split(',')
+          .map((phoneNumber) => phoneNumber.trim())
+          .filter(Boolean)
+      : [];
+
+    if (!normalizedName || !normalizedMessage) {
+      return res.status(400).json({
+        message: 'Name and message are required.',
+      });
+    }
+
+    try {
+      const supporter = await Supporter.create({
+        name: normalizedName,
+        message: normalizedMessage,
+        ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        phoneNumbers: normalizedPhoneNumbers,
+      });
+
+      return res.status(201).json({
+        supporter,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/supporters/:id',
+  authenticateAdmin,
+  requireTabPermission('users', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid supporter id.',
+      });
+    }
+
+    const supporter = await Supporter.findByIdAndDelete(id);
+
+    if (!supporter) {
+      return res.status(404).json({
+        message: 'Supporter not found.',
+      });
+    }
+
+    return res.status(200).json({
+      message: 'Supporter deleted.',
+    });
   }
 );
 
@@ -1196,6 +1755,179 @@ router.delete(
 
     return res.status(200).json({
       message: 'Banner deleted.',
+    });
+  }
+);
+
+router.get(
+  '/social-media',
+  authenticateAdmin,
+  requireTabPermission('socialMedia', 'read'),
+  async (_req, res) => {
+    const siteSettings = await getOrCreateSiteSettings();
+    const socialMediaLinks = Array.isArray(siteSettings.socialMediaLinks)
+      ? siteSettings.socialMediaLinks
+      : [];
+
+    return res.status(200).json({
+      socialMediaLinks,
+    });
+  }
+);
+
+router.post(
+  '/social-media',
+  authenticateAdmin,
+  requireTabPermission('socialMedia', 'create'),
+  uploadSocialMediaIcon,
+  async (req, res) => {
+    const { name, url } = req.body || {};
+    const normalizedName = typeof name === 'string' ? name.trim() : '';
+    const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+
+    if (!normalizedName || !normalizedUrl || !req.file) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Name, url, and icon are required.',
+      });
+    }
+
+    const nextIcon = `/uploads/social-media-icons/${req.file.filename}`;
+
+    try {
+      const siteSettings = await getOrCreateSiteSettings();
+      siteSettings.socialMediaLinks.push({
+        name: normalizedName,
+        url: normalizedUrl,
+        icon: nextIcon,
+      });
+      await siteSettings.save();
+
+      const createdItem =
+        siteSettings.socialMediaLinks[siteSettings.socialMediaLinks.length - 1];
+
+      return res.status(201).json({
+        socialMediaLink: createdItem,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.put(
+  '/social-media/:id',
+  authenticateAdmin,
+  requireTabPermission('socialMedia', 'update'),
+  uploadSocialMediaIcon,
+  async (req, res) => {
+    const { id } = req.params;
+    const { name, url } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Invalid social media id.',
+      });
+    }
+
+    try {
+      const siteSettings = await getOrCreateSiteSettings();
+      const item = siteSettings.socialMediaLinks.id(id);
+
+      if (!item) {
+        deleteUploadedFile(req.file);
+
+        return res.status(404).json({
+          message: 'Social media item not found.',
+        });
+      }
+
+      const hasName = typeof name === 'string';
+      const hasUrl = typeof url === 'string';
+      const normalizedName = hasName ? name.trim() : '';
+      const normalizedUrl = hasUrl ? url.trim() : '';
+
+      if (hasName && !normalizedName) {
+        deleteUploadedFile(req.file);
+
+        return res.status(400).json({
+          message: 'Name cannot be empty.',
+        });
+      }
+
+      if (hasUrl && !normalizedUrl) {
+        deleteUploadedFile(req.file);
+
+        return res.status(400).json({
+          message: 'Url cannot be empty.',
+        });
+      }
+
+      if (hasName) {
+        item.name = normalizedName;
+      }
+
+      if (hasUrl) {
+        item.url = normalizedUrl;
+      }
+
+      if (req.file) {
+        const previousIcon = item.icon;
+        item.icon = `/uploads/social-media-icons/${req.file.filename}`;
+        deleteStoredUpload(previousIcon);
+      }
+
+      await siteSettings.save();
+
+      return res.status(200).json({
+        socialMediaLink: item,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.delete(
+  '/social-media/:id',
+  authenticateAdmin,
+  requireTabPermission('socialMedia', 'delete'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid social media id.',
+      });
+    }
+
+    const siteSettings = await getOrCreateSiteSettings();
+    const item = siteSettings.socialMediaLinks.id(id);
+
+    if (!item) {
+      return res.status(404).json({
+        message: 'Social media item not found.',
+      });
+    }
+
+    const iconPath = item.icon;
+    item.deleteOne();
+    await siteSettings.save();
+    deleteStoredUpload(iconPath);
+
+    return res.status(200).json({
+      message: 'Social media item deleted.',
     });
   }
 );

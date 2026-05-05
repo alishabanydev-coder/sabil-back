@@ -24,6 +24,27 @@ const contactLinkSchema = new Schema(
   { _id: false }
 );
 
+const socialMediaLinkSchema = new Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 100,
+  },
+  url: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 500,
+  },
+  icon: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 500,
+  },
+});
+
 const siteSettingsSchema = new Schema(
   {
     singletonKey: {
@@ -36,40 +57,8 @@ const siteSettingsSchema = new Schema(
       type: [contactLinkSchema],
       default: [],
     },
-  },
-  schemaOptions
-);
-
-module.exports = mongoose.model('SiteSettings', siteSettingsSchema);
-const mongoose = require('mongoose');
-
-const { Schema } = mongoose;
-
-const contactLinkSchema = new Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 100,
-    },
-    link: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-  },
-  { _id: false }
-);
-
-const schemaOptions = {
-  timestamps: true,
-};
-
-const siteSettingsSchema = new Schema(
-  {
-    contactLinks: {
-      type: [contactLinkSchema],
+    socialMediaLinks: {
+      type: [socialMediaLinkSchema],
       default: [],
     },
   },
