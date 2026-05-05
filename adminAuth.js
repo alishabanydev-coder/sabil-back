@@ -299,6 +299,17 @@ function hasChannelProjectAccess(admin, projectId) {
   return projectIds.some((allowedProjectId) => allowedProjectId.toString() === projectId);
 }
 
+function getAllowedChannelProjectIds(admin) {
+  if (admin?.role === ADMIN_ROLES.SUPER_ADMIN) {
+    return null;
+  }
+
+  const permission = getAdminPermission(admin, 'channels');
+  const projectIds = Array.isArray(permission?.projectIds) ? permission.projectIds : [];
+
+  return projectIds.map((projectId) => projectId.toString());
+}
+
 function requireChannelProjectAccess(req, res, next) {
   const { projectId } = req.params;
 
@@ -453,6 +464,32 @@ async function commentTargetExists(targetType, targetId) {
   return Boolean(target);
 }
 
+async function canAdminAccessCommentTarget(admin, targetType, targetId) {
+  if (admin?.role === ADMIN_ROLES.SUPER_ADMIN) {
+    return true;
+  }
+
+  const allowedProjectIds = getAllowedChannelProjectIds(admin);
+  if (!Array.isArray(allowedProjectIds) || allowedProjectIds.length === 0) {
+    return false;
+  }
+
+  if (targetType === 'video') {
+    const video = await Video.findById(targetId).select('projectId');
+    return Boolean(video?.projectId && allowedProjectIds.includes(video.projectId.toString()));
+  }
+
+  if (targetType === 'breakdown') {
+    const breakdown = await ProjectBreakDown.findById(targetId).select('projectId');
+    return Boolean(
+      breakdown?.projectId && allowedProjectIds.includes(breakdown.projectId.toString())
+    );
+  }
+
+  // Blog comments are not project-scoped, so restricted admins cannot access them.
+  return false;
+}
+
 function hasPermission(admin, tab, action) {
   const permission = getAdminPermission(admin, tab);
 
@@ -472,6 +509,40 @@ function requireTabPermission(tab, action) {
     }
 
     return next();
+  };
+}
+
+function hasProjectScopedChannelAccessForAction(admin, action) {
+  if (admin?.role === ADMIN_ROLES.SUPER_ADMIN) {
+    return true;
+  }
+
+  const channelPermission = getAdminPermission(admin, 'channels');
+  if (!channelPermission) {
+    return false;
+  }
+
+  const canDoAction = Boolean(
+    channelPermission[`can${action[0].toUpperCase()}${action.slice(1)}`]
+  );
+  const hasProjectScope =
+    Array.isArray(channelPermission.projectIds) && channelPermission.projectIds.length > 0;
+
+  return canDoAction && hasProjectScope;
+}
+
+function requireCommentAccess(action) {
+  return (req, res, next) => {
+    if (
+      hasPermission(req.admin, 'comments', action) ||
+      hasProjectScopedChannelAccessForAction(req.admin, action)
+    ) {
+      return next();
+    }
+
+    return res.status(403).json({
+      message: `Admin ${action} access is required for comments.`,
+    });
   };
 }
 
@@ -736,6 +807,23 @@ router.get(
 
     return res.status(200).json({
       videos,
+    });
+  }
+);
+
+router.get(
+  '/channels/projects/:projectId/breakdowns',
+  authenticateAdmin,
+  requireTabPermission('channels', 'read'),
+  requireChannelProjectAccess,
+  async (req, res) => {
+    const { projectId } = req.params;
+    const breakdowns = await ProjectBreakDown.find({ projectId }).sort({
+      createdAt: -1,
+    });
+
+    return res.status(200).json({
+      breakdowns,
     });
   }
 );
@@ -1160,7 +1248,7 @@ router.delete(
 router.post(
   '/comments',
   authenticateAdmin,
-  requireTabPermission('comments', 'create'),
+  requireCommentAccess('create'),
   async (req, res) => {
     const { text, username, targetType, targetId, parentCommentId } = req.body || {};
     const normalizedText = typeof text === 'string' ? text.trim() : '';
@@ -1181,6 +1269,12 @@ router.post(
     if (!(await commentTargetExists(normalizedTargetType, targetId))) {
       return res.status(404).json({
         message: 'Comment target not found.',
+      });
+    }
+
+    if (!(await canAdminAccessCommentTarget(req.admin, normalizedTargetType, targetId))) {
+      return res.status(403).json({
+        message: 'You do not have access to this comment target project.',
       });
     }
 
@@ -1234,7 +1328,7 @@ router.post(
 router.get(
   '/comments',
   authenticateAdmin,
-  requireTabPermission('comments', 'read'),
+  requireCommentAccess('read'),
   async (req, res) => {
     const { targetType, username } = req.query || {};
     const filter = {};
@@ -1257,6 +1351,44 @@ router.get(
       };
     }
 
+    if (req.admin?.role !== ADMIN_ROLES.SUPER_ADMIN) {
+      const allowedProjectIds = getAllowedChannelProjectIds(req.admin);
+      if (!Array.isArray(allowedProjectIds) || allowedProjectIds.length === 0) {
+        return res.status(200).json({
+          comments: [],
+        });
+      }
+
+      const [videos, breakdowns] = await Promise.all([
+        Video.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
+        ProjectBreakDown.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
+      ]);
+
+      const allowedVideoIds = videos.map((item) => item._id.toString());
+      const allowedBreakdownIds = breakdowns.map((item) => item._id.toString());
+
+      if (filter.targetType === 'video') {
+        filter.targetId = { $in: allowedVideoIds };
+      } else if (filter.targetType === 'breakdown') {
+        filter.targetId = { $in: allowedBreakdownIds };
+      } else if (filter.targetType === 'blog') {
+        return res.status(200).json({
+          comments: [],
+        });
+      } else {
+        filter.$or = [
+          {
+            targetType: 'video',
+            targetId: { $in: allowedVideoIds },
+          },
+          {
+            targetType: 'breakdown',
+            targetId: { $in: allowedBreakdownIds },
+          },
+        ];
+      }
+    }
+
     const comments = await Comment.find(filter).sort({ createdAt: -1 });
 
     return res.status(200).json({
@@ -1268,7 +1400,7 @@ router.get(
 router.put(
   '/comments/:id',
   authenticateAdmin,
-  requireTabPermission('comments', 'update'),
+  requireCommentAccess('update'),
   async (req, res) => {
     const { id } = req.params;
     const { text, username, targetType, targetId, parentCommentId } = req.body || {};
@@ -1283,6 +1415,18 @@ router.put(
     if (!comment) {
       return res.status(404).json({
         message: 'Comment not found.',
+      });
+    }
+
+    if (
+      !(await canAdminAccessCommentTarget(
+        req.admin,
+        comment.targetType,
+        comment.targetId.toString()
+      ))
+    ) {
+      return res.status(403).json({
+        message: 'You do not have access to this comment target project.',
       });
     }
 
@@ -1320,6 +1464,12 @@ router.put(
     if (!(await commentTargetExists(nextTargetType, nextTargetId))) {
       return res.status(404).json({
         message: 'Comment target not found.',
+      });
+    }
+
+    if (!(await canAdminAccessCommentTarget(req.admin, nextTargetType, nextTargetId))) {
+      return res.status(403).json({
+        message: 'You do not have access to this comment target project.',
       });
     }
 
@@ -1400,7 +1550,7 @@ router.put(
 router.delete(
   '/comments/:id',
   authenticateAdmin,
-  requireTabPermission('comments', 'delete'),
+  requireCommentAccess('delete'),
   async (req, res) => {
     const { id } = req.params;
 
@@ -1410,7 +1560,7 @@ router.delete(
       });
     }
 
-    const comment = await Comment.findByIdAndDelete(id);
+    const comment = await Comment.findById(id);
 
     if (!comment) {
       return res.status(404).json({
@@ -1418,7 +1568,28 @@ router.delete(
       });
     }
 
-    await Comment.deleteMany({ parentCommentId: id });
+    if (
+      !(await canAdminAccessCommentTarget(
+        req.admin,
+        comment.targetType,
+        comment.targetId.toString()
+      ))
+    ) {
+      return res.status(403).json({
+        message: 'You do not have access to this comment target project.',
+      });
+    }
+
+    await comment.deleteOne();
+
+    await Comment.updateMany(
+      { parentCommentId: id },
+      {
+        $set: {
+          parentCommentId: null,
+        },
+      }
+    );
 
     return res.status(200).json({
       message: 'Comment deleted.',
