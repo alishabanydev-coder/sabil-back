@@ -29,11 +29,22 @@ const projectBreakDownSchema = new Schema(
       type: String,
       trim: true,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
 
 projectBreakDownSchema.index({ projectId: 1, createdAt: -1 });
 projectBreakDownSchema.index({ title: 1 });
+projectBreakDownSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('ProjectBreakDown', projectBreakDownSchema);

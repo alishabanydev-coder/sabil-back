@@ -39,6 +39,16 @@ const commentSchema = new Schema(
       default: null,
       index: true,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
@@ -46,5 +56,6 @@ const commentSchema = new Schema(
 commentSchema.index({ targetType: 1, targetId: 1, createdAt: -1 });
 commentSchema.index({ parentCommentId: 1, createdAt: 1 });
 commentSchema.index({ username: 1 });
+commentSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Comment', commentSchema);

@@ -24,10 +24,21 @@ const projectSchema = new Schema(
       required: true,
       trim: true,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
 
 projectSchema.index({ name: 1 });
+projectSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Project', projectSchema);

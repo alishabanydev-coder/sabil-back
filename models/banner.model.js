@@ -20,6 +20,16 @@ const bannerSchema = new Schema(
       default: true,
       index: true,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   {
     timestamps: true,
@@ -28,5 +38,6 @@ const bannerSchema = new Schema(
 
 bannerSchema.index({ isActive: 1, updatedAt: -1 });
 bannerSchema.index({ updatedAt: -1 });
+bannerSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Banner', bannerSchema);

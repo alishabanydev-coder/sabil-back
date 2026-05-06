@@ -546,6 +546,164 @@ function requireCommentAccess(action) {
   };
 }
 
+const MAIN_PAGE_LAYOUT_SECTIONS = {
+  banner: 'banner',
+  projects: 'projects',
+  breakdown: 'breakdown',
+  video: 'video',
+  comment: 'comment',
+};
+
+function normalizeMainPageLayoutSection(section) {
+  return typeof section === 'string' ? section.trim().toLowerCase() : '';
+}
+
+function parseOptionalBoolean(value) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const normalizedValue = value.trim().toLowerCase();
+    if (normalizedValue === 'true') {
+      return true;
+    }
+    if (normalizedValue === 'false') {
+      return false;
+    }
+  }
+
+  return undefined;
+}
+
+function parseOptionalHomepageOrder(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsedValue = Number(value);
+  if (!Number.isInteger(parsedValue) || parsedValue < 1) {
+    return undefined;
+  }
+
+  return parsedValue;
+}
+
+function normalizeMainPageLayoutItem(section, item) {
+  if (!item) {
+    return null;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.banner) {
+    return {
+      ...item,
+      name: item.title,
+    };
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
+    return {
+      ...item,
+      title: item.name,
+    };
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
+    return {
+      ...item,
+      thumbnail:
+        typeof item.projectId === 'object' &&
+        item.projectId &&
+        typeof item.projectId.thumbnail === 'string'
+          ? item.projectId.thumbnail
+          : '',
+    };
+  }
+
+  return item;
+}
+
+async function getMainPageLayoutItems(section) {
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.banner) {
+    const items = await Banner.find({}).sort({
+      showInHomepage: -1,
+      homepageOrder: 1,
+      updatedAt: -1,
+    });
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
+    const items = await Project.find({}).sort({
+      showInHomepage: -1,
+      homepageOrder: 1,
+      createdAt: -1,
+    });
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
+    const items = await ProjectBreakDown.find({})
+      .populate('projectId', 'thumbnail')
+      .sort({
+        showInHomepage: -1,
+        homepageOrder: 1,
+        createdAt: -1,
+      });
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.video) {
+    const items = await Video.find({}).sort({
+      showInHomepage: -1,
+      homepageOrder: 1,
+      createdAt: -1,
+    });
+    return items.map((item) => item.toObject());
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.comment) {
+    const items = await Comment.find({}).sort({
+      showInHomepage: -1,
+      homepageOrder: 1,
+      createdAt: -1,
+    });
+    return items.map((item) => item.toObject());
+  }
+
+  return null;
+}
+
+function getMainPageLayoutModel(section) {
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.banner) {
+    return Banner;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
+    return Project;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
+    return ProjectBreakDown;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.video) {
+    return Video;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.comment) {
+    return Comment;
+  }
+
+  return null;
+}
+
 router.post('/login', async (req, res) => {
   try {
     await ensureBootstrapSuperAdmin();
@@ -1594,6 +1752,112 @@ router.delete(
     return res.status(200).json({
       message: 'Comment deleted.',
     });
+  }
+);
+
+router.get(
+  '/main-page-layout/:section',
+  authenticateAdmin,
+  requireTabPermission('mainPageLayout', 'read'),
+  async (req, res) => {
+    const section = normalizeMainPageLayoutSection(req.params.section);
+    const items = await getMainPageLayoutItems(section);
+
+    if (!items) {
+      return res.status(400).json({
+        message:
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+      });
+    }
+
+    return res.status(200).json(items);
+  }
+);
+
+router.patch(
+  '/main-page-layout/:section/:id',
+  authenticateAdmin,
+  requireTabPermission('mainPageLayout', 'update'),
+  async (req, res) => {
+    const section = normalizeMainPageLayoutSection(req.params.section);
+    const { id } = req.params;
+    const model = getMainPageLayoutModel(section);
+
+    if (!model) {
+      return res.status(400).json({
+        message:
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid item id.',
+      });
+    }
+
+    const { showInHomepage, homepageOrder } = req.body || {};
+    const updates = {};
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'showInHomepage')) {
+      const parsedShowInHomepage = parseOptionalBoolean(showInHomepage);
+      if (parsedShowInHomepage === undefined) {
+        return res.status(400).json({
+          message: 'showInHomepage must be a boolean.',
+        });
+      }
+      updates.showInHomepage = parsedShowInHomepage;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'homepageOrder')) {
+      const parsedHomepageOrder = parseOptionalHomepageOrder(homepageOrder);
+      if (parsedHomepageOrder === undefined) {
+        return res.status(400).json({
+          message: 'homepageOrder must be a positive integer or null.',
+        });
+      }
+      updates.homepageOrder = parsedHomepageOrder;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: 'Nothing to update.',
+      });
+    }
+
+    if (updates.showInHomepage === false) {
+      updates.homepageOrder = null;
+    }
+
+    try {
+      const item = await model.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true,
+      });
+
+      if (!item) {
+        return res.status(404).json({
+          message: 'Item not found.',
+        });
+      }
+
+      let normalizedItem = item.toObject();
+      if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
+        const itemWithProject = await ProjectBreakDown.findById(item._id).populate(
+          'projectId',
+          'thumbnail'
+        );
+        normalizedItem = itemWithProject ? itemWithProject.toObject() : normalizedItem;
+      }
+
+      return res.status(200).json({
+        item: normalizeMainPageLayoutItem(section, normalizedItem),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
   }
 );
 

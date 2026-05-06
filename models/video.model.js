@@ -43,11 +43,22 @@ const videoSchema = new Schema(
       type: Number,
       min: 1,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
 
 videoSchema.index({ projectId: 1, season: 1, episode: 1 }, { unique: true });
 videoSchema.index({ title: 1 });
+videoSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Video', videoSchema);

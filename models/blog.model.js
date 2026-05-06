@@ -32,10 +32,21 @@ const blogSchema = new Schema(
       type: String,
       trim: true,
     },
+    showInHomepage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    homepageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
 
 blogSchema.index({ title: 1 });
+blogSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Blog', blogSchema);
