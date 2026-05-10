@@ -21,6 +21,7 @@ const {
 
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
+const projectThumbnailUploadDir = path.join(__dirname, 'uploads', 'project-thumbnails');
 const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
 const blogImageUploadDir = path.join(__dirname, 'uploads', 'blog-images');
 const socialMediaIconUploadDir = path.join(__dirname, 'uploads', 'social-media-icons');
@@ -46,6 +47,34 @@ const videoThumbnailUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Thumbnail must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const projectThumbnailUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(projectThumbnailUploadDir, { recursive: true });
+      callback(null, projectThumbnailUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Project thumbnail must be an image file.'));
       return;
     }
 
@@ -340,6 +369,18 @@ function uploadVideoThumbnail(req, res, next) {
   });
 }
 
+function uploadProjectThumbnail(req, res, next) {
+  projectThumbnailUpload.single('thumbnail')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
 function uploadBannerPoster(req, res, next) {
   bannerPosterUpload.single('poster')(req, res, (error) => {
     if (!error) {
@@ -418,6 +459,36 @@ function normalizeBlogImagePath(imagePath) {
   }
 
   const trimmedPath = imagePath.trim();
+  if (trimmedPath.startsWith('data:')) {
+    return trimmedPath;
+  }
+
+  if (trimmedPath.startsWith('/uploads/')) {
+    return trimmedPath;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedPath);
+    if (parsedUrl.pathname.startsWith('/uploads/')) {
+      return parsedUrl.pathname;
+    }
+
+    if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+      return trimmedPath;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function normalizeProjectThumbnailPath(thumbnailPath) {
+  if (typeof thumbnailPath !== 'string' || !thumbnailPath.trim()) {
+    return '';
+  }
+
+  const trimmedPath = thumbnailPath.trim();
   if (trimmedPath.startsWith('/uploads/')) {
     return trimmedPath;
   }
@@ -428,10 +499,21 @@ function normalizeBlogImagePath(imagePath) {
       return parsedUrl.pathname;
     }
   } catch {
-    return null;
+    return '';
   }
 
-  return null;
+  return '';
+}
+
+function normalizeProjectAsset(project) {
+  if (!project || typeof project !== 'object') {
+    return project;
+  }
+
+  return {
+    ...project,
+    thumbnail: normalizeProjectThumbnailPath(project.thumbnail),
+  };
 }
 
 async function getOrCreateSiteSettings() {
@@ -552,6 +634,7 @@ const MAIN_PAGE_LAYOUT_SECTIONS = {
   breakdown: 'breakdown',
   video: 'video',
   comment: 'comment',
+  blog: 'blog',
 };
 
 function normalizeMainPageLayoutSection(section) {
@@ -602,10 +685,10 @@ function normalizeMainPageLayoutItem(section, item) {
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
-    return {
+    return normalizeProjectAsset({
       ...item,
       title: item.name,
-    };
+    });
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
@@ -615,8 +698,25 @@ function normalizeMainPageLayoutItem(section, item) {
         typeof item.projectId === 'object' &&
         item.projectId &&
         typeof item.projectId.thumbnail === 'string'
-          ? item.projectId.thumbnail
+          ? normalizeProjectThumbnailPath(item.projectId.thumbnail)
           : '',
+    };
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.blog) {
+    const firstImage =
+      Array.isArray(item.image) && typeof item.image[0] === 'string'
+        ? normalizeBlogImagePath(item.image[0]) || ''
+        : '';
+
+    return {
+      ...item,
+      images: firstImage,
+      image: Array.isArray(item.image)
+        ? item.image
+            .map((imagePath) => normalizeBlogImagePath(imagePath))
+            .filter(Boolean)
+        : [],
     };
   }
 
@@ -677,6 +777,17 @@ async function getMainPageLayoutItems(section) {
     return items.map((item) => item.toObject());
   }
 
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.blog) {
+    const items = await Blog.find({}).sort({
+      showInHomepage: -1,
+      homepageOrder: 1,
+      createdAt: -1,
+    });
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
+  }
+
   return null;
 }
 
@@ -699,6 +810,10 @@ function getMainPageLayoutModel(section) {
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.comment) {
     return Comment;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.blog) {
+    return Blog;
   }
 
   return null;
@@ -925,7 +1040,9 @@ router.get(
     const projects = await Project.find({}).sort({ createdAt: -1 });
 
     return res.status(200).json({
-      projects,
+      projects: projects.map((project) =>
+        normalizeProjectAsset(project.toObject())
+      ),
     });
   }
 );
@@ -945,7 +1062,9 @@ router.get(
     const projects = await Project.find(filter).sort({ createdAt: -1 });
 
     return res.status(200).json({
-      projects,
+      projects: projects.map((project) =>
+        normalizeProjectAsset(project.toObject())
+      ),
     });
   }
 );
@@ -1766,7 +1885,7 @@ router.get(
     if (!items) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
       });
     }
 
@@ -1783,13 +1902,36 @@ router.get(
     if (!items) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
       });
     }
 
     return res.status(200).json(items);
   }
 );
+
+router.get('/public/videos', async (_req, res) => {
+  const videos = await Video.find({}).sort({
+    season: 1,
+    episode: 1,
+    createdAt: -1,
+  });
+
+  return res.status(200).json({
+    videos,
+  });
+});
+
+router.get('/public/social-media', async (_req, res) => {
+  const siteSettings = await getOrCreateSiteSettings();
+  const socialMediaLinks = Array.isArray(siteSettings.socialMediaLinks)
+    ? siteSettings.socialMediaLinks
+    : [];
+
+  return res.status(200).json({
+    socialMediaLinks,
+  });
+});
 
 router.patch(
   '/main-page-layout/:section/:id',
@@ -1803,7 +1945,7 @@ router.patch(
     if (!model) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
       });
     }
 
@@ -2388,30 +2530,39 @@ router.post(
   '/projects',
   authenticateAdmin,
   requireSuperAdmin,
+  uploadProjectThumbnail,
   async (req, res) => {
-    const { name, thumbnail, description } = req.body || {};
+    const { name, description } = req.body || {};
 
     if (
       typeof name !== 'string' ||
-      typeof thumbnail !== 'string' ||
-      typeof description !== 'string'
+      typeof description !== 'string' ||
+      !name.trim() ||
+      !description.trim() ||
+      !req.file
     ) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: 'Project name, thumbnail, and description are required.',
       });
     }
 
+    const nextThumbnail = `/uploads/project-thumbnails/${req.file.filename}`;
+
     try {
       const project = await Project.create({
-        name,
-        thumbnail,
-        description,
+        name: name.trim(),
+        thumbnail: nextThumbnail,
+        description: description.trim(),
       });
 
       return res.status(201).json({
-        project,
+        project: normalizeProjectAsset(project.toObject()),
       });
     } catch (error) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: error.message,
       });
@@ -2423,46 +2574,58 @@ router.patch(
   '/projects/:id',
   authenticateAdmin,
   requireSuperAdmin,
+  uploadProjectThumbnail,
   async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: 'Invalid project id.',
       });
     }
 
     const updates = {};
-    const { name, thumbnail, description } = req.body || {};
+    const { name, description } = req.body || {};
 
     if (typeof name === 'string') {
-      updates.name = name;
-    }
-
-    if (typeof thumbnail === 'string') {
-      updates.thumbnail = thumbnail;
+      updates.name = name.trim();
     }
 
     if (typeof description === 'string') {
-      updates.description = description;
+      updates.description = description.trim();
+    }
+
+    if (req.file) {
+      updates.thumbnail = `/uploads/project-thumbnails/${req.file.filename}`;
     }
 
     try {
-      const project = await Project.findByIdAndUpdate(id, updates, {
-        new: true,
-        runValidators: true,
-      });
+      const project = await Project.findById(id);
 
       if (!project) {
+        deleteUploadedFile(req.file);
+
         return res.status(404).json({
           message: 'Project not found.',
         });
       }
 
+      const previousThumbnail = project.thumbnail;
+      Object.assign(project, updates);
+      await project.save();
+
+      if (req.file && previousThumbnail !== project.thumbnail) {
+        deleteStoredUpload(previousThumbnail);
+      }
+
       return res.status(200).json({
-        project,
+        project: normalizeProjectAsset(project.toObject()),
       });
     } catch (error) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: error.message,
       });
@@ -2499,6 +2662,7 @@ router.delete(
     videos.forEach((video) => {
       deleteStoredUpload(video.thumbnail);
     });
+    deleteStoredUpload(project.thumbnail);
 
     return res.status(200).json({
       message: 'Project and related videos deleted.',
