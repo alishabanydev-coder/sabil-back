@@ -1774,6 +1774,23 @@ router.get(
   }
 );
 
+router.get(
+  '/public/main-page-layout/:section',
+  async (req, res) => {
+    const section = normalizeMainPageLayoutSection(req.params.section);
+    const items = await getMainPageLayoutItems(section);
+
+    if (!items) {
+      return res.status(400).json({
+        message:
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment.',
+      });
+    }
+
+    return res.status(200).json(items);
+  }
+);
+
 router.patch(
   '/main-page-layout/:section/:id',
   authenticateAdmin,
