@@ -71,6 +71,7 @@ const projectThumbnailUpload = multer({
   }),
   limits: {
     fileSize: 5 * 1024 * 1024,
+    files: 25,
   },
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
@@ -370,7 +371,10 @@ function uploadVideoThumbnail(req, res, next) {
 }
 
 function uploadProjectThumbnail(req, res, next) {
-  projectThumbnailUpload.single('thumbnail')(req, res, (error) => {
+  projectThumbnailUpload.fields([
+    { name: 'thumbnail', maxCount: 1 },
+    { name: 'characterImages', maxCount: 24 },
+  ])(req, res, (error) => {
     if (!error) {
       return next();
     }
@@ -505,6 +509,29 @@ function normalizeProjectThumbnailPath(thumbnailPath) {
   return '';
 }
 
+function normalizeProjectCharacterImagePath(imagePath) {
+  return normalizeProjectThumbnailPath(imagePath);
+}
+
+function normalizeProjectCharacters(characters) {
+  if (!Array.isArray(characters)) {
+    return [];
+  }
+
+  return characters
+    .map((item) => {
+      const baseCharacter =
+        item && typeof item === 'object' && !Array.isArray(item) ? item : {};
+
+      return {
+        ...baseCharacter,
+        name: typeof item?.name === 'string' ? item.name.trim() : '',
+        image: normalizeProjectCharacterImagePath(item?.image),
+      };
+    })
+    .filter((item) => item.name && item.image);
+}
+
 function normalizeProjectAsset(project) {
   if (!project || typeof project !== 'object') {
     return project;
@@ -513,6 +540,123 @@ function normalizeProjectAsset(project) {
   return {
     ...project,
     thumbnail: normalizeProjectThumbnailPath(project.thumbnail),
+    characters: normalizeProjectCharacters(project.characters),
+  };
+}
+
+function getUploadedFilesByField(req, fieldName) {
+  if (req?.files && !Array.isArray(req.files)) {
+    return Array.isArray(req.files[fieldName]) ? req.files[fieldName] : [];
+  }
+
+  return [];
+}
+
+function parseProjectCharactersField(rawCharacters, uploadedCharacterFiles) {
+  if (rawCharacters === undefined || rawCharacters === null || rawCharacters === '') {
+    if (Array.isArray(uploadedCharacterFiles) && uploadedCharacterFiles.length > 0) {
+      return {
+        ok: false,
+        characters: [],
+        usedImageFileIndices: [],
+        message: 'Characters payload is required when character images are uploaded.',
+      };
+    }
+
+    return {
+      ok: true,
+      characters: [],
+      usedImageFileIndices: [],
+      message: '',
+    };
+  }
+
+  let parsedCharacters;
+  if (typeof rawCharacters === 'string') {
+    try {
+      parsedCharacters = JSON.parse(rawCharacters);
+    } catch {
+      return {
+        ok: false,
+        characters: [],
+        usedImageFileIndices: [],
+        message: 'Invalid characters payload.',
+      };
+    }
+  } else if (Array.isArray(rawCharacters)) {
+    parsedCharacters = rawCharacters;
+  } else {
+    return {
+      ok: false,
+      characters: [],
+      usedImageFileIndices: [],
+      message: 'Invalid characters payload.',
+    };
+  }
+
+  if (!Array.isArray(parsedCharacters)) {
+    return {
+      ok: false,
+      characters: [],
+      usedImageFileIndices: [],
+      message: 'Characters must be an array.',
+    };
+  }
+
+  const normalizedCharacters = [];
+  const usedImageFileIndices = [];
+
+  for (const item of parsedCharacters) {
+    const name = typeof item?.name === 'string' ? item.name.trim() : '';
+    if (!name) {
+      return {
+        ok: false,
+        characters: [],
+        usedImageFileIndices: [],
+        message: 'Each character must have a name.',
+      };
+    }
+
+    let image = '';
+    if (Number.isInteger(item?.imageFileIndex)) {
+      const uploadedFile = uploadedCharacterFiles[item.imageFileIndex];
+      if (uploadedFile?.filename) {
+        image = `/uploads/project-thumbnails/${uploadedFile.filename}`;
+        usedImageFileIndices.push(item.imageFileIndex);
+      } else {
+        return {
+          ok: false,
+          characters: [],
+          usedImageFileIndices: [],
+          message: `Character "${name}" image file index is invalid.`,
+        };
+      }
+    }
+
+    if (!image && typeof item?.image === 'string') {
+      image = normalizeProjectCharacterImagePath(item.image);
+    }
+
+    if (!image) {
+      return {
+        ok: false,
+        characters: [],
+        usedImageFileIndices: [],
+        message: `Character "${name}" must have an image.`,
+      };
+    }
+
+    normalizedCharacters.push({
+      name,
+      image,
+    });
+  }
+
+  return {
+    ok: true,
+    characters: normalizedCharacters,
+    usedImageFileIndices,
+    message: '',
   };
 }
 
@@ -2079,6 +2223,47 @@ router.post(
   }
 );
 
+router.post('/public/supporters', async (req, res) => {
+  const { name, email, message, phoneNumbers } = req.body || {};
+  const normalizedName = typeof name === 'string' ? name.trim() : '';
+  const normalizedMessage = typeof message === 'string' ? message.trim() : '';
+  const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const normalizedPhoneNumbers = Array.isArray(phoneNumbers)
+    ? phoneNumbers
+        .filter((phoneNumber) => typeof phoneNumber === 'string')
+        .map((phoneNumber) => phoneNumber.trim())
+        .filter(Boolean)
+    : typeof phoneNumbers === 'string'
+    ? phoneNumbers
+        .split(',')
+        .map((phoneNumber) => phoneNumber.trim())
+        .filter(Boolean)
+    : [];
+
+  if (!normalizedName || !normalizedMessage) {
+    return res.status(400).json({
+      message: 'Name and message are required.',
+    });
+  }
+
+  try {
+    const supporter = await Supporter.create({
+      name: normalizedName,
+      message: normalizedMessage,
+      ...(normalizedEmail ? { email: normalizedEmail } : {}),
+      phoneNumbers: normalizedPhoneNumbers,
+    });
+
+    return res.status(201).json({
+      supporter,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message,
+    });
+  }
+});
+
 router.delete(
   '/supporters/:id',
   authenticateAdmin,
@@ -2532,36 +2717,54 @@ router.post(
   requireSuperAdmin,
   uploadProjectThumbnail,
   async (req, res) => {
-    const { name, description } = req.body || {};
+    const { name, description, characters } = req.body || {};
+    const thumbnailFile = getUploadedFilesByField(req, 'thumbnail')[0];
+    const uploadedCharacterFiles = getUploadedFilesByField(req, 'characterImages');
+    const uploadedProjectFiles = [thumbnailFile, ...uploadedCharacterFiles].filter(
+      Boolean
+    );
+    const parsedCharacters = parseProjectCharactersField(
+      characters,
+      uploadedCharacterFiles
+    );
+    const unusedUploadedCharacterFiles = uploadedCharacterFiles.filter(
+      (_file, index) => !parsedCharacters.usedImageFileIndices?.includes(index)
+    );
 
     if (
       typeof name !== 'string' ||
       typeof description !== 'string' ||
       !name.trim() ||
       !description.trim() ||
-      !req.file
+      !thumbnailFile ||
+      !parsedCharacters.ok
     ) {
-      deleteUploadedFile(req.file);
+      deleteUploadedFiles(uploadedProjectFiles);
 
       return res.status(400).json({
-        message: 'Project name, thumbnail, and description are required.',
+        message:
+          parsedCharacters.ok
+            ? 'Project name, thumbnail, and description are required.'
+            : parsedCharacters.message,
       });
     }
 
-    const nextThumbnail = `/uploads/project-thumbnails/${req.file.filename}`;
+    const nextThumbnail = `/uploads/project-thumbnails/${thumbnailFile.filename}`;
 
     try {
       const project = await Project.create({
         name: name.trim(),
         thumbnail: nextThumbnail,
         description: description.trim(),
+        characters: parsedCharacters.characters,
       });
+      deleteUploadedFiles(unusedUploadedCharacterFiles);
 
       return res.status(201).json({
         project: normalizeProjectAsset(project.toObject()),
       });
     } catch (error) {
-      deleteUploadedFile(req.file);
+      deleteUploadedFiles(uploadedProjectFiles);
 
       return res.status(400).json({
         message: error.message,
@@ -2577,9 +2780,14 @@ router.patch(
   uploadProjectThumbnail,
   async (req, res) => {
     const { id } = req.params;
+    const thumbnailFile = getUploadedFilesByField(req, 'thumbnail')[0];
+    const uploadedCharacterFiles = getUploadedFilesByField(req, 'characterImages');
+    const uploadedProjectFiles = [thumbnailFile, ...uploadedCharacterFiles].filter(
+      Boolean
+    );
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      deleteUploadedFile(req.file);
+      deleteUploadedFiles(uploadedProjectFiles);
 
       return res.status(400).json({
         message: 'Invalid project id.',
@@ -2587,7 +2795,7 @@ router.patch(
     }
 
     const updates = {};
-    const { name, description } = req.body || {};
+    const { name, description, characters } = req.body || {};
 
     if (typeof name === 'string') {
       updates.name = name.trim();
@@ -2597,15 +2805,35 @@ router.patch(
       updates.description = description.trim();
     }
 
-    if (req.file) {
-      updates.thumbnail = `/uploads/project-thumbnails/${req.file.filename}`;
+    if (thumbnailFile) {
+      updates.thumbnail = `/uploads/project-thumbnails/${thumbnailFile.filename}`;
+    }
+
+    if (characters !== undefined) {
+      const parsedCharacters = parseProjectCharactersField(
+        characters,
+        uploadedCharacterFiles
+      );
+      const unusedUploadedCharacterFiles = uploadedCharacterFiles.filter(
+        (_file, index) => !parsedCharacters.usedImageFileIndices?.includes(index)
+      );
+      if (!parsedCharacters.ok) {
+        deleteUploadedFiles(uploadedProjectFiles);
+
+        return res.status(400).json({
+          message: parsedCharacters.message,
+        });
+      }
+
+      updates.characters = parsedCharacters.characters;
+      deleteUploadedFiles(unusedUploadedCharacterFiles);
     }
 
     try {
       const project = await Project.findById(id);
 
       if (!project) {
-        deleteUploadedFile(req.file);
+        deleteUploadedFiles(uploadedProjectFiles);
 
         return res.status(404).json({
           message: 'Project not found.',
@@ -2613,18 +2841,31 @@ router.patch(
       }
 
       const previousThumbnail = project.thumbnail;
+      const previousCharacterImages = Array.isArray(project.characters)
+        ? project.characters.map((item) => item.image)
+        : [];
       Object.assign(project, updates);
       await project.save();
 
-      if (req.file && previousThumbnail !== project.thumbnail) {
+      if (thumbnailFile && previousThumbnail !== project.thumbnail) {
         deleteStoredUpload(previousThumbnail);
       }
+
+      const nextCharacterImages = Array.isArray(project.characters)
+        ? project.characters.map((item) => item.image)
+        : [];
+
+      previousCharacterImages.forEach((imagePath) => {
+        if (!nextCharacterImages.includes(imagePath)) {
+          deleteStoredUpload(imagePath);
+        }
+      });
 
       return res.status(200).json({
         project: normalizeProjectAsset(project.toObject()),
       });
     } catch (error) {
-      deleteUploadedFile(req.file);
+      deleteUploadedFiles(uploadedProjectFiles);
 
       return res.status(400).json({
         message: error.message,
@@ -2663,6 +2904,11 @@ router.delete(
       deleteStoredUpload(video.thumbnail);
     });
     deleteStoredUpload(project.thumbnail);
+    if (Array.isArray(project.characters)) {
+      project.characters.forEach((character) => {
+        deleteStoredUpload(character.image);
+      });
+    }
 
     return res.status(200).json({
       message: 'Project and related videos deleted.',

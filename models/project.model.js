@@ -6,6 +6,23 @@ const schemaOptions = {
   timestamps: true,
 };
 
+const projectCharacterSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 120,
+    },
+    image: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 const projectSchema = new Schema(
   {
     name: {
@@ -33,6 +50,10 @@ const projectSchema = new Schema(
       type: Number,
       default: null,
       min: 1,
+    },
+    characters: {
+      type: [projectCharacterSchema],
+      default: [],
     },
   },
   schemaOptions

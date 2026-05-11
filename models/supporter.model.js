@@ -16,18 +16,19 @@ const supporterSchema = new Schema(
     },
     email: {
       type: String,
+      required: true,
       trim: true,
       lowercase: true,
       maxlength: 200,
     },
     message: {
       type: String,
-      required: true,
       trim: true,
       maxlength: 4000,
     },
     phoneNumbers: {
       type: [String],
+      required: true,
       default: [],
     },
   },
