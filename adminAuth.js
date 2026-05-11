@@ -21,6 +21,7 @@ const {
 
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
+const breakdownThumbnailUploadDir = path.join(__dirname, 'uploads', 'breakdown-thumbnails');
 const projectThumbnailUploadDir = path.join(__dirname, 'uploads', 'project-thumbnails');
 const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
 const blogImageUploadDir = path.join(__dirname, 'uploads', 'blog-images');
@@ -47,6 +48,34 @@ const videoThumbnailUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Thumbnail must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const breakdownThumbnailUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(breakdownThumbnailUploadDir, { recursive: true });
+      callback(null, breakdownThumbnailUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Breakdown thumbnail must be an image file.'));
       return;
     }
 
@@ -360,6 +389,18 @@ function requireChannelProjectAccess(req, res, next) {
 
 function uploadVideoThumbnail(req, res, next) {
   videoThumbnailUpload.single('thumbnail')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
+function uploadBreakdownThumbnail(req, res, next) {
+  breakdownThumbnailUpload.single('thumbnail')(req, res, (error) => {
     if (!error) {
       return next();
     }
@@ -836,14 +877,17 @@ function normalizeMainPageLayoutItem(section, item) {
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
+    const directThumbnail = normalizeProjectThumbnailPath(item.thumbnail);
+    const projectThumbnail =
+      typeof item.projectId === 'object' &&
+      item.projectId &&
+      typeof item.projectId.thumbnail === 'string'
+        ? normalizeProjectThumbnailPath(item.projectId.thumbnail)
+        : '';
+
     return {
       ...item,
-      thumbnail:
-        typeof item.projectId === 'object' &&
-        item.projectId &&
-        typeof item.projectId.thumbnail === 'string'
-          ? normalizeProjectThumbnailPath(item.projectId.thumbnail)
-          : '',
+      thumbnail: directThumbnail || projectThumbnail,
     };
   }
 
@@ -2295,8 +2339,9 @@ router.post(
   '/breakdowns',
   authenticateAdmin,
   requireTabPermission('breakdowns', 'create'),
+  uploadBreakdownThumbnail,
   async (req, res) => {
-    const { projectId, title, content, videoUrl } = req.body || {};
+    const { projectId, title, content, videoUrl, thumbnail } = req.body || {};
 
     if (
       !mongoose.Types.ObjectId.isValid(projectId) ||
@@ -2305,6 +2350,8 @@ router.post(
       !title.trim() ||
       !content.trim()
     ) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: 'Project, title, and content are required.',
       });
@@ -2313,8 +2360,22 @@ router.post(
     const project = await Project.findById(projectId);
 
     if (!project) {
+      deleteUploadedFile(req.file);
+
       return res.status(404).json({
         message: 'Project not found.',
+      });
+    }
+
+    const nextThumbnail = req.file
+      ? `/uploads/breakdown-thumbnails/${req.file.filename}`
+      : normalizeProjectThumbnailPath(thumbnail);
+
+    if (!nextThumbnail) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: 'Breakdown thumbnail is required.',
       });
     }
 
@@ -2323,6 +2384,7 @@ router.post(
         projectId,
         title: title.trim(),
         content: content.trim(),
+        thumbnail: nextThumbnail,
         ...(typeof videoUrl === 'string' && videoUrl.trim()
           ? { videoUrl: videoUrl.trim() }
           : {}),
@@ -2332,6 +2394,8 @@ router.post(
         breakdown,
       });
     } catch (error) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: error.message,
       });
@@ -2343,9 +2407,10 @@ router.put(
   '/breakdowns/:id',
   authenticateAdmin,
   requireTabPermission('breakdowns', 'update'),
+  uploadBreakdownThumbnail,
   async (req, res) => {
     const { id } = req.params;
-    const { projectId, title, content, videoUrl } = req.body || {};
+    const { projectId, title, content, videoUrl, thumbnail } = req.body || {};
 
     if (
       !mongoose.Types.ObjectId.isValid(id) ||
@@ -2355,6 +2420,8 @@ router.put(
       !title.trim() ||
       !content.trim()
     ) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: 'Breakdown id, project, title, and content are required.',
       });
@@ -2363,17 +2430,42 @@ router.put(
     const project = await Project.findById(projectId);
 
     if (!project) {
+      deleteUploadedFile(req.file);
+
       return res.status(404).json({
         message: 'Project not found.',
       });
     }
 
     try {
+      const existingBreakdown = await ProjectBreakDown.findById(id);
+
+      if (!existingBreakdown) {
+        deleteUploadedFile(req.file);
+
+        return res.status(404).json({
+          message: 'Breakdown not found.',
+        });
+      }
+
+      const nextThumbnail = req.file
+        ? `/uploads/breakdown-thumbnails/${req.file.filename}`
+        : normalizeProjectThumbnailPath(thumbnail) || existingBreakdown.thumbnail;
+
+      if (!nextThumbnail) {
+        deleteUploadedFile(req.file);
+
+        return res.status(400).json({
+          message: 'Breakdown thumbnail is required.',
+        });
+      }
+
       const updateDocument = {
         $set: {
           projectId,
           title: title.trim(),
           content: content.trim(),
+          thumbnail: nextThumbnail,
         },
       };
 
@@ -2392,16 +2484,16 @@ router.put(
         }
       );
 
-      if (!breakdown) {
-        return res.status(404).json({
-          message: 'Breakdown not found.',
-        });
+      if (req.file && existingBreakdown.thumbnail !== nextThumbnail) {
+        deleteStoredUpload(existingBreakdown.thumbnail);
       }
 
       return res.status(200).json({
         breakdown,
       });
     } catch (error) {
+      deleteUploadedFile(req.file);
+
       return res.status(400).json({
         message: error.message,
       });
@@ -2429,6 +2521,8 @@ router.delete(
         message: 'Breakdown not found.',
       });
     }
+
+    deleteStoredUpload(breakdown.thumbnail);
 
     return res.status(200).json({
       message: 'Breakdown deleted.',

@@ -25,6 +25,11 @@ const projectBreakDownSchema = new Schema(
       required: true,
       trim: true,
     },
+    thumbnail: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     videoUrl: {
       type: String,
       trim: true,
