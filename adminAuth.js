@@ -2094,7 +2094,21 @@ router.get(
       });
     }
 
-    return res.status(200).json(items);
+    const visibleItems = items
+      .filter((item) => item && item.showInHomepage === true)
+      .sort((firstItem, secondItem) => {
+        const firstOrder =
+          Number.isInteger(firstItem.homepageOrder) && firstItem.homepageOrder > 0
+            ? firstItem.homepageOrder
+            : Number.MAX_SAFE_INTEGER;
+        const secondOrder =
+          Number.isInteger(secondItem.homepageOrder) && secondItem.homepageOrder > 0
+            ? secondItem.homepageOrder
+            : Number.MAX_SAFE_INTEGER;
+        return firstOrder - secondOrder;
+      });
+
+    return res.status(200).json(visibleItems);
   }
 );
 
@@ -2120,6 +2134,100 @@ router.get('/public/social-media', async (_req, res) => {
     socialMediaLinks,
   });
 });
+
+router.put(
+  '/main-page-layout/:section',
+  authenticateAdmin,
+  requireTabPermission('mainPageLayout', 'update'),
+  async (req, res) => {
+    const section = normalizeMainPageLayoutSection(req.params.section);
+    const model = getMainPageLayoutModel(section);
+
+    if (!model) {
+      return res.status(400).json({
+        message:
+          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
+      });
+    }
+
+    const orderedIds = req.body?.orderedIds;
+
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({
+        message: 'orderedIds must be an array of item ids.',
+      });
+    }
+
+    const hasInvalidId = orderedIds.some(
+      (id) => typeof id !== 'string' || !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (hasInvalidId) {
+      return res.status(400).json({
+        message: 'orderedIds must contain valid item ids.',
+      });
+    }
+
+    const uniqueIds = new Set(orderedIds);
+    if (uniqueIds.size !== orderedIds.length) {
+      return res.status(400).json({
+        message: 'orderedIds must not contain duplicates.',
+      });
+    }
+
+    try {
+      if (orderedIds.length > 0) {
+        const existingItemsCount = await model.countDocuments({
+          _id: { $in: orderedIds },
+        });
+
+        if (existingItemsCount !== orderedIds.length) {
+          return res.status(404).json({
+            message: 'One or more items were not found.',
+          });
+        }
+      }
+
+      await model.updateMany(
+        {
+          showInHomepage: true,
+          _id: { $nin: orderedIds },
+        },
+        {
+          $set: {
+            showInHomepage: false,
+            homepageOrder: null,
+          },
+        }
+      );
+
+      if (orderedIds.length > 0) {
+        await model.bulkWrite(
+          orderedIds.map((id, index) => ({
+            updateOne: {
+              filter: { _id: id },
+              update: {
+                $set: {
+                  showInHomepage: true,
+                  homepageOrder: index + 1,
+                },
+              },
+            },
+          }))
+        );
+      }
+
+      const items = await getMainPageLayoutItems(section);
+
+      return res.status(200).json({
+        items,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
 
 router.patch(
   '/main-page-layout/:section/:id',
