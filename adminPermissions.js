@@ -14,6 +14,7 @@ const ADMIN_TABS = [
   'users',
   'socialMedia',
   'aboutUs',
+  'donation',
   'admins',
 ];
 

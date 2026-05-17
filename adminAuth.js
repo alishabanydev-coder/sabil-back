@@ -755,6 +755,22 @@ function normalizeAboutUsPayload(aboutUs) {
   };
 }
 
+function normalizeDonationPayload(siteSettings) {
+  if (!siteSettings) {
+    return null;
+  }
+
+  const donation = siteSettings.donation || {};
+  const name = typeof donation.name === 'string' ? donation.name.trim() : '';
+  const link = typeof donation.link === 'string' ? donation.link.trim() : '';
+
+  return {
+    name: name || 'Donate Here',
+    link,
+    updatedAt: siteSettings.updatedAt,
+  };
+}
+
 async function getOrCreateAboutUsPage() {
   const aboutUsPage = await AboutUsPage.findOneAndUpdate(
     { singletonKey: 'main' },
@@ -2197,6 +2213,14 @@ router.get('/public/social-media', async (_req, res) => {
   });
 });
 
+router.get('/public/donation', async (_req, res) => {
+  const siteSettings = await getOrCreateSiteSettings();
+
+  return res.status(200).json({
+    donation: normalizeDonationPayload(siteSettings),
+  });
+});
+
 router.get(
   '/about-us',
   authenticateAdmin,
@@ -2304,6 +2328,78 @@ router.get('/public/about-us', async (_req, res) => {
       : null,
   });
 });
+
+router.get(
+  '/donation',
+  authenticateAdmin,
+  requireTabPermission('donation', 'read'),
+  async (_req, res) => {
+    try {
+      const siteSettings = await getOrCreateSiteSettings();
+
+      return res.status(200).json({
+        donation: normalizeDonationPayload(siteSettings),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.patch(
+  '/donation',
+  authenticateAdmin,
+  requireTabPermission('donation', 'update'),
+  async (req, res) => {
+    const body = req.body || {};
+    const updates = {};
+
+    if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+      const normalizedName = typeof body.name === 'string' ? body.name.trim() : '';
+      if (!normalizedName) {
+        return res.status(400).json({
+          message: 'name is required and cannot be empty.',
+        });
+      }
+      updates['donation.name'] = normalizedName;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'link')) {
+      const normalizedLink = typeof body.link === 'string' ? body.link.trim() : '';
+      if (!normalizedLink) {
+        return res.status(400).json({
+          message: 'link is required and cannot be empty.',
+        });
+      }
+      updates['donation.link'] = normalizedLink;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: 'Nothing to update.',
+      });
+    }
+
+    try {
+      await getOrCreateSiteSettings();
+      const siteSettings = await SiteSettings.findOneAndUpdate(
+        { singletonKey: 'main' },
+        { $set: updates },
+        { new: true, runValidators: true }
+      );
+
+      return res.status(200).json({
+        donation: normalizeDonationPayload(siteSettings),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
 
 router.put(
   '/main-page-layout/:section',
