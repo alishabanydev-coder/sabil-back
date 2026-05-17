@@ -13,6 +13,7 @@ const ADMIN_TABS = [
   'channels',
   'users',
   'socialMedia',
+  'aboutUs',
   'admins',
 ];
 

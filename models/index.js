@@ -7,6 +7,7 @@ const Banner = require('./banner.model');
 const SiteSettings = require('./siteSettings.model');
 const Supporter = require('./supporter.model');
 const Admin = require('./admin.model');
+const AboutUsPage = require('./aboutUsPage.model');
 
 module.exports = {
   Project,
@@ -18,4 +19,5 @@ module.exports = {
   SiteSettings,
   Supporter,
   Admin,
+  AboutUsPage,
 };
