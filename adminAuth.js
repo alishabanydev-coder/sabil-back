@@ -14,6 +14,7 @@ const ProjectBreakDown = require('./models/projectBreakDown.model');
 const SiteSettings = require('./models/siteSettings.model');
 const Supporter = require('./models/supporter.model');
 const AboutUsPage = require('./models/aboutUsPage.model');
+const Catalogue = require('./models/catalogue.model');
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
@@ -27,6 +28,7 @@ const projectThumbnailUploadDir = path.join(__dirname, 'uploads', 'project-thumb
 const bannerPosterUploadDir = path.join(__dirname, 'uploads', 'banners');
 const blogImageUploadDir = path.join(__dirname, 'uploads', 'blog-images');
 const socialMediaIconUploadDir = path.join(__dirname, 'uploads', 'social-media-icons');
+const catalogueImageUploadDir = path.join(__dirname, 'uploads', 'catalogue-images');
 
 const videoThumbnailUpload = multer({
   storage: multer.diskStorage({
@@ -191,6 +193,34 @@ const socialMediaIconUpload = multer({
   fileFilter(_req, file, callback) {
     if (!file.mimetype.startsWith('image/')) {
       callback(new Error('Social media icon must be an image file.'));
+      return;
+    }
+
+    callback(null, true);
+  },
+});
+
+const catalogueImageUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, callback) {
+      fs.mkdirSync(catalogueImageUploadDir, { recursive: true });
+      callback(null, catalogueImageUploadDir);
+    },
+    filename(_req, file, callback) {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const uniqueName = `${Date.now()}-${Math.round(
+        Math.random() * 1e9
+      )}${extension}`;
+
+      callback(null, uniqueName);
+    },
+  }),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter(_req, file, callback) {
+    if (!file.mimetype.startsWith('image/')) {
+      callback(new Error('Catalogue image must be an image file.'));
       return;
     }
 
@@ -463,6 +493,18 @@ function uploadSocialMediaIcon(req, res, next) {
   });
 }
 
+function uploadCatalogueImage(req, res, next) {
+  catalogueImageUpload.single('image')(req, res, (error) => {
+    if (!error) {
+      return next();
+    }
+
+    return res.status(400).json({
+      message: error.message,
+    });
+  });
+}
+
 function deleteUploadedFile(file) {
   if (!file?.path) {
     return;
@@ -553,6 +595,10 @@ function normalizeProjectThumbnailPath(thumbnailPath) {
 
 function normalizeProjectCharacterImagePath(imagePath) {
   return normalizeProjectThumbnailPath(imagePath);
+}
+
+function normalizeCatalogueImagePath(imagePath) {
+  return normalizeBlogImagePath(imagePath);
 }
 
 function normalizeProjectCharacters(characters) {
@@ -894,6 +940,7 @@ function requireCommentAccess(action) {
 const MAIN_PAGE_LAYOUT_SECTIONS = {
   banner: 'banner',
   projects: 'projects',
+  catalogues: 'catalogues',
   breakdown: 'breakdown',
   video: 'video',
   comment: 'comment',
@@ -935,6 +982,19 @@ function parseOptionalHomepageOrder(value) {
   return parsedValue;
 }
 
+function parseOptionalNonNegativeInteger(value) {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+
+  const parsedValue = Number(value);
+  if (!Number.isInteger(parsedValue) || parsedValue < 0) {
+    return undefined;
+  }
+
+  return parsedValue;
+}
+
 function normalizeMainPageLayoutItem(section, item) {
   if (!item) {
     return null;
@@ -952,6 +1012,15 @@ function normalizeMainPageLayoutItem(section, item) {
       ...item,
       title: item.name,
     });
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.catalogues) {
+    return {
+      ...item,
+      showInHomepage: item.isActive === true,
+      homepageOrder:
+        Number.isInteger(item.order) && item.order > 0 ? item.order : null,
+    };
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
@@ -1012,6 +1081,17 @@ async function getMainPageLayoutItems(section) {
     );
   }
 
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.catalogues) {
+    const items = await Catalogue.find({}).sort({
+      isActive: -1,
+      order: 1,
+      createdAt: -1,
+    });
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
+  }
+
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
     const items = await ProjectBreakDown.find({})
       .populate('projectId', 'thumbnail')
@@ -1064,6 +1144,10 @@ function getMainPageLayoutModel(section) {
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
     return Project;
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.catalogues) {
+    return Catalogue;
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.breakdown) {
@@ -1371,6 +1455,24 @@ router.get(
   }
 );
 
+router.get(
+  '/channels/projects/:projectId/catalogues',
+  authenticateAdmin,
+  requireTabPermission('channels', 'read'),
+  requireChannelProjectAccess,
+  async (req, res) => {
+    const { projectId } = req.params;
+    const catalogues = await Catalogue.find({ projectId }).sort({
+      order: 1,
+      createdAt: -1,
+    });
+
+    return res.status(200).json({
+      catalogues,
+    });
+  }
+);
+
 router.post(
   '/channels/projects/:projectId/videos',
   authenticateAdmin,
@@ -1452,6 +1554,74 @@ router.post(
           error.code === 11000
             ? `Season ${parsedSeason}, episode ${parsedEpisode} already exists for this project.`
             : error.message,
+      });
+    }
+  }
+);
+
+router.post(
+  '/channels/projects/:projectId/catalogues',
+  authenticateAdmin,
+  requireTabPermission('channels', 'create'),
+  requireChannelProjectAccess,
+  uploadCatalogueImage,
+  async (req, res) => {
+    const { projectId } = req.params;
+    const { image, header, body, order, isActive } = req.body || {};
+    const normalizedImage = req.file
+      ? `/uploads/catalogue-images/${req.file.filename}`
+      : normalizeCatalogueImagePath(image);
+    const normalizedHeader = typeof header === 'string' ? header.trim() : '';
+    const normalizedBody = typeof body === 'string' ? body.trim() : '';
+    const parsedOrder = parseOptionalNonNegativeInteger(order);
+    const parsedIsActive = parseOptionalBoolean(isActive);
+
+    if (!normalizedImage || !normalizedHeader || !normalizedBody) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: 'Image, header, and body are required.',
+      });
+    }
+
+    if (order !== undefined && parsedOrder === undefined) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: 'order must be a non-negative integer.',
+      });
+    }
+
+    if (isActive !== undefined && parsedIsActive === undefined) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: 'isActive must be a boolean.',
+      });
+    }
+
+    const project = await Project.findById(projectId);
+    if (!project) {
+      deleteUploadedFile(req.file);
+      return res.status(404).json({
+        message: 'Project not found.',
+      });
+    }
+
+    try {
+      const catalogue = await Catalogue.create({
+        projectId,
+        image: normalizedImage,
+        header: normalizedHeader,
+        body: normalizedBody,
+        ...(parsedOrder !== undefined ? { order: parsedOrder } : {}),
+        ...(parsedIsActive !== undefined ? { isActive: parsedIsActive } : {}),
+      });
+
+      return res.status(201).json({
+        catalogue,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: error.message,
       });
     }
   }
@@ -1561,6 +1731,113 @@ router.patch(
   }
 );
 
+router.patch(
+  '/channels/projects/:projectId/catalogues/:catalogueId',
+  authenticateAdmin,
+  requireTabPermission('channels', 'update'),
+  requireChannelProjectAccess,
+  uploadCatalogueImage,
+  async (req, res) => {
+    const { projectId, catalogueId } = req.params;
+    const { image, header, body, order, isActive } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(catalogueId)) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: 'Invalid catalogue id.',
+      });
+    }
+
+    const catalogue = await Catalogue.findOne({ _id: catalogueId, projectId });
+    if (!catalogue) {
+      deleteUploadedFile(req.file);
+      return res.status(404).json({
+        message: 'Catalogue not found.',
+      });
+    }
+
+    const updates = {};
+    if (req.file) {
+      updates.image = `/uploads/catalogue-images/${req.file.filename}`;
+    } else if (Object.prototype.hasOwnProperty.call(req.body || {}, 'image')) {
+      const normalizedImage = normalizeCatalogueImagePath(image);
+      if (!normalizedImage) {
+        return res.status(400).json({
+          message: 'image must be a valid URL, data URI, or /uploads path.',
+        });
+      }
+      updates.image = normalizedImage;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'header')) {
+      if (typeof header !== 'string' || !header.trim()) {
+        deleteUploadedFile(req.file);
+        return res.status(400).json({
+          message: 'header cannot be empty.',
+        });
+      }
+      updates.header = header.trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'body')) {
+      if (typeof body !== 'string' || !body.trim()) {
+        deleteUploadedFile(req.file);
+        return res.status(400).json({
+          message: 'body cannot be empty.',
+        });
+      }
+      updates.body = body.trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'order')) {
+      const parsedOrder = parseOptionalNonNegativeInteger(order);
+      if (parsedOrder === undefined) {
+        deleteUploadedFile(req.file);
+        return res.status(400).json({
+          message: 'order must be a non-negative integer.',
+        });
+      }
+      updates.order = parsedOrder;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'isActive')) {
+      const parsedIsActive = parseOptionalBoolean(isActive);
+      if (parsedIsActive === undefined) {
+        deleteUploadedFile(req.file);
+        return res.status(400).json({
+          message: 'isActive must be a boolean.',
+        });
+      }
+      updates.isActive = parsedIsActive;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: 'Nothing to update.',
+      });
+    }
+
+    try {
+      const previousImage = catalogue.image;
+      Object.assign(catalogue, updates);
+      await catalogue.save();
+      if (req.file && previousImage !== catalogue.image) {
+        deleteStoredUpload(previousImage);
+      }
+
+      return res.status(200).json({
+        catalogue,
+      });
+    } catch (error) {
+      deleteUploadedFile(req.file);
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
 router.delete(
   '/channels/projects/:projectId/videos/:videoId',
   authenticateAdmin,
@@ -1587,6 +1864,36 @@ router.delete(
 
     return res.status(200).json({
       message: 'Video deleted.',
+    });
+  }
+);
+
+router.delete(
+  '/channels/projects/:projectId/catalogues/:catalogueId',
+  authenticateAdmin,
+  requireTabPermission('channels', 'delete'),
+  requireChannelProjectAccess,
+  async (req, res) => {
+    const { projectId, catalogueId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(catalogueId)) {
+      return res.status(400).json({
+        message: 'Invalid catalogue id.',
+      });
+    }
+
+    const catalogue = await Catalogue.findOneAndDelete({ _id: catalogueId, projectId });
+
+    if (!catalogue) {
+      return res.status(404).json({
+        message: 'Catalogue not found.',
+      });
+    }
+
+    deleteStoredUpload(catalogue.image);
+
+    return res.status(200).json({
+      message: 'Catalogue deleted.',
     });
   }
 );
@@ -2151,7 +2458,7 @@ router.get(
     if (!items) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
+          'Invalid main page layout section. Use one of: banner, projects, catalogues, breakdown, video, comment, blog.',
       });
     }
 
@@ -2168,7 +2475,7 @@ router.get(
     if (!items) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
+          'Invalid main page layout section. Use one of: banner, projects, catalogues, breakdown, video, comment, blog.',
       });
     }
 
@@ -2199,6 +2506,28 @@ router.get('/public/videos', async (_req, res) => {
 
   return res.status(200).json({
     videos,
+  });
+});
+
+router.get('/public/projects/:projectId/catalogues', async (req, res) => {
+  const { projectId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(projectId)) {
+    return res.status(400).json({
+      message: 'Invalid project id.',
+    });
+  }
+
+  const catalogues = await Catalogue.find({
+    projectId,
+    isActive: true,
+  }).sort({
+    order: 1,
+    createdAt: -1,
+  });
+
+  return res.status(200).json({
+    catalogues,
   });
 });
 
@@ -2407,12 +2736,100 @@ router.put(
   requireTabPermission('mainPageLayout', 'update'),
   async (req, res) => {
     const section = normalizeMainPageLayoutSection(req.params.section);
+    if (section === MAIN_PAGE_LAYOUT_SECTIONS.catalogues) {
+      const orderedIds = req.body?.orderedIds;
+      const projectId = req.body?.projectId;
+
+      if (!Array.isArray(orderedIds)) {
+        return res.status(400).json({
+          message: 'orderedIds must be an array of item ids.',
+        });
+      }
+
+      if (typeof projectId !== 'string' || !mongoose.Types.ObjectId.isValid(projectId)) {
+        return res.status(400).json({
+          message: 'projectId must be a valid project id.',
+        });
+      }
+
+      const hasInvalidId = orderedIds.some(
+        (id) => typeof id !== 'string' || !mongoose.Types.ObjectId.isValid(id)
+      );
+      if (hasInvalidId) {
+        return res.status(400).json({
+          message: 'orderedIds must contain valid item ids.',
+        });
+      }
+
+      const uniqueIds = new Set(orderedIds);
+      if (uniqueIds.size !== orderedIds.length) {
+        return res.status(400).json({
+          message: 'orderedIds must not contain duplicates.',
+        });
+      }
+
+      try {
+        if (orderedIds.length > 0) {
+          const existingItemsCount = await Catalogue.countDocuments({
+            projectId,
+            _id: { $in: orderedIds },
+          });
+
+          if (existingItemsCount !== orderedIds.length) {
+            return res.status(404).json({
+              message: 'One or more items were not found.',
+            });
+          }
+        }
+
+        await Catalogue.updateMany(
+          {
+            projectId,
+            isActive: true,
+            _id: { $nin: orderedIds },
+          },
+          {
+            $set: {
+              isActive: false,
+              order: 0,
+            },
+          }
+        );
+
+        if (orderedIds.length > 0) {
+          await Catalogue.bulkWrite(
+            orderedIds.map((id, index) => ({
+              updateOne: {
+                filter: { _id: id, projectId },
+                update: {
+                  $set: {
+                    isActive: true,
+                    order: index + 1,
+                  },
+                },
+              },
+            }))
+          );
+        }
+
+        const items = await getMainPageLayoutItems(section);
+
+        return res.status(200).json({
+          items,
+        });
+      } catch (error) {
+        return res.status(400).json({
+          message: error.message,
+        });
+      }
+    }
+
     const model = getMainPageLayoutModel(section);
 
     if (!model) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
+          'Invalid main page layout section. Use one of: banner, projects, catalogues, breakdown, video, comment, blog.',
       });
     }
 
@@ -2502,12 +2919,83 @@ router.patch(
   async (req, res) => {
     const section = normalizeMainPageLayoutSection(req.params.section);
     const { id } = req.params;
+    if (section === MAIN_PAGE_LAYOUT_SECTIONS.catalogues) {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          message: 'Invalid item id.',
+        });
+      }
+
+      const { showInHomepage, homepageOrder } = req.body || {};
+      const updates = {};
+
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'showInHomepage')) {
+        const parsedShowInHomepage = parseOptionalBoolean(showInHomepage);
+        if (parsedShowInHomepage === undefined) {
+          return res.status(400).json({
+            message: 'showInHomepage must be a boolean.',
+          });
+        }
+        updates.showInHomepage = parsedShowInHomepage;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'homepageOrder')) {
+        const parsedHomepageOrder = parseOptionalHomepageOrder(homepageOrder);
+        if (parsedHomepageOrder === undefined) {
+          return res.status(400).json({
+            message: 'homepageOrder must be a positive integer or null.',
+          });
+        }
+        updates.homepageOrder = parsedHomepageOrder;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({
+          message: 'Nothing to update.',
+        });
+      }
+
+      if (updates.showInHomepage === false) {
+        updates.homepageOrder = null;
+      }
+
+      const catalogueUpdates = {};
+      if (Object.prototype.hasOwnProperty.call(updates, 'showInHomepage')) {
+        catalogueUpdates.isActive = updates.showInHomepage;
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, 'homepageOrder')) {
+        catalogueUpdates.order =
+          updates.homepageOrder === null ? 0 : updates.homepageOrder;
+      }
+
+      try {
+        const item = await Catalogue.findByIdAndUpdate(id, catalogueUpdates, {
+          new: true,
+          runValidators: true,
+        });
+
+        if (!item) {
+          return res.status(404).json({
+            message: 'Item not found.',
+          });
+        }
+
+        return res.status(200).json({
+          item: normalizeMainPageLayoutItem(section, item.toObject()),
+        });
+      } catch (error) {
+        return res.status(400).json({
+          message: error.message,
+        });
+      }
+    }
+
     const model = getMainPageLayoutModel(section);
 
     if (!model) {
       return res.status(400).json({
         message:
-          'Invalid main page layout section. Use one of: banner, projects, breakdown, video, comment, blog.',
+          'Invalid main page layout section. Use one of: banner, projects, catalogues, breakdown, video, comment, blog.',
       });
     }
 
@@ -3363,13 +3851,22 @@ router.delete(
       });
     }
 
-    const videos = await Video.find({ projectId: id });
+    const [videos, catalogues] = await Promise.all([
+      Video.find({ projectId: id }),
+      Catalogue.find({ projectId: id }),
+    ]);
 
-    await Video.deleteMany({ projectId: id });
+    await Promise.all([
+      Video.deleteMany({ projectId: id }),
+      Catalogue.deleteMany({ projectId: id }),
+    ]);
     await project.deleteOne();
 
     videos.forEach((video) => {
       deleteStoredUpload(video.thumbnail);
+    });
+    catalogues.forEach((catalogue) => {
+      deleteStoredUpload(catalogue.image);
     });
     deleteStoredUpload(project.thumbnail);
     if (Array.isArray(project.characters)) {
@@ -3379,7 +3876,7 @@ router.delete(
     }
 
     return res.status(200).json({
-      message: 'Project and related videos deleted.',
+      message: 'Project and related content deleted.',
     });
   }
 );
