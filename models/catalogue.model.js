@@ -32,13 +32,11 @@ const catalogueSchema = new Schema(
     },
     order: {
       type: Number,
-      default: 0,
       min: 0,
       index: true,
     },
     isActive: {
       type: Boolean,
-      default: true,
       index: true,
     },
   },

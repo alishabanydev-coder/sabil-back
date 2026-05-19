@@ -1567,33 +1567,17 @@ router.post(
   uploadCatalogueImage,
   async (req, res) => {
     const { projectId } = req.params;
-    const { image, header, body, order, isActive } = req.body || {};
+    const { image, header, body } = req.body || {};
     const normalizedImage = req.file
       ? `/uploads/catalogue-images/${req.file.filename}`
       : normalizeCatalogueImagePath(image);
     const normalizedHeader = typeof header === 'string' ? header.trim() : '';
     const normalizedBody = typeof body === 'string' ? body.trim() : '';
-    const parsedOrder = parseOptionalNonNegativeInteger(order);
-    const parsedIsActive = parseOptionalBoolean(isActive);
 
     if (!normalizedImage || !normalizedHeader || !normalizedBody) {
       deleteUploadedFile(req.file);
       return res.status(400).json({
         message: 'Image, header, and body are required.',
-      });
-    }
-
-    if (order !== undefined && parsedOrder === undefined) {
-      deleteUploadedFile(req.file);
-      return res.status(400).json({
-        message: 'order must be a non-negative integer.',
-      });
-    }
-
-    if (isActive !== undefined && parsedIsActive === undefined) {
-      deleteUploadedFile(req.file);
-      return res.status(400).json({
-        message: 'isActive must be a boolean.',
       });
     }
 
@@ -1611,8 +1595,6 @@ router.post(
         image: normalizedImage,
         header: normalizedHeader,
         body: normalizedBody,
-        ...(parsedOrder !== undefined ? { order: parsedOrder } : {}),
-        ...(parsedIsActive !== undefined ? { isActive: parsedIsActive } : {}),
       });
 
       return res.status(201).json({
@@ -1739,7 +1721,7 @@ router.patch(
   uploadCatalogueImage,
   async (req, res) => {
     const { projectId, catalogueId } = req.params;
-    const { image, header, body, order, isActive } = req.body || {};
+    const { image, header, body } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(catalogueId)) {
       deleteUploadedFile(req.file);
@@ -1787,28 +1769,6 @@ router.patch(
         });
       }
       updates.body = body.trim();
-    }
-
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'order')) {
-      const parsedOrder = parseOptionalNonNegativeInteger(order);
-      if (parsedOrder === undefined) {
-        deleteUploadedFile(req.file);
-        return res.status(400).json({
-          message: 'order must be a non-negative integer.',
-        });
-      }
-      updates.order = parsedOrder;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'isActive')) {
-      const parsedIsActive = parseOptionalBoolean(isActive);
-      if (parsedIsActive === undefined) {
-        deleteUploadedFile(req.file);
-        return res.status(400).json({
-          message: 'isActive must be a boolean.',
-        });
-      }
-      updates.isActive = parsedIsActive;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -2492,6 +2452,56 @@ router.get(
             : Number.MAX_SAFE_INTEGER;
         return firstOrder - secondOrder;
       });
+
+    if (section === MAIN_PAGE_LAYOUT_SECTIONS.projects) {
+      const catalogueItems = await getMainPageLayoutItems(
+        MAIN_PAGE_LAYOUT_SECTIONS.catalogues
+      );
+      const visibleCatalogues = Array.isArray(catalogueItems)
+        ? catalogueItems
+            .filter((item) => item && item.showInHomepage === true)
+            .sort((firstItem, secondItem) => {
+              const firstOrder =
+                Number.isInteger(firstItem.homepageOrder) && firstItem.homepageOrder > 0
+                  ? firstItem.homepageOrder
+                  : Number.MAX_SAFE_INTEGER;
+              const secondOrder =
+                Number.isInteger(secondItem.homepageOrder) && secondItem.homepageOrder > 0
+                  ? secondItem.homepageOrder
+                  : Number.MAX_SAFE_INTEGER;
+              return firstOrder - secondOrder;
+            })
+        : [];
+
+      const cataloguesByProjectId = visibleCatalogues.reduce(
+        (accumulator, catalogueItem) => {
+          const projectId =
+            typeof catalogueItem.projectId === 'string'
+              ? catalogueItem.projectId
+              : typeof catalogueItem.projectId === 'object' && catalogueItem.projectId
+                ? catalogueItem.projectId._id || catalogueItem.projectId.id
+                : '';
+
+          if (!projectId) {
+            return accumulator;
+          }
+
+          if (!Array.isArray(accumulator[projectId])) {
+            accumulator[projectId] = [];
+          }
+          accumulator[projectId].push(catalogueItem);
+          return accumulator;
+        },
+        {}
+      );
+
+      const projectsWithCatalogues = visibleItems.map((projectItem) => ({
+        ...projectItem,
+        catalogues: cataloguesByProjectId[projectItem._id] || [],
+      }));
+
+      return res.status(200).json(projectsWithCatalogues);
+    }
 
     return res.status(200).json(visibleItems);
   }
