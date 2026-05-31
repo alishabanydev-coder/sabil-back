@@ -5,6 +5,7 @@ const ADMIN_ROLES = {
 
 const ADMIN_TABS = [
   'mainPageLayout',
+  'appManagement',
   'banner',
   'breakdowns',
   'blog',
