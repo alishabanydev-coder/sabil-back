@@ -2658,6 +2658,48 @@ router.get('/public/videos', async (_req, res) => {
   });
 });
 
+router.get('/public/videos/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(videoId)) {
+    return res.status(400).json({
+      message: 'Invalid video id.',
+    });
+  }
+
+  const video = await Video.findById(videoId).populate(
+    'projectId',
+    'name thumbnail description'
+  );
+
+  if (!video) {
+    return res.status(404).json({
+      message: 'Video not found.',
+    });
+  }
+
+  const videoObject = video.toObject();
+  const projectObject =
+    typeof videoObject.projectId === 'object' && videoObject.projectId
+      ? videoObject.projectId
+      : null;
+  const normalizedProject = projectObject
+    ? normalizeProjectAsset({
+        ...projectObject,
+        title: projectObject.name,
+      })
+    : null;
+
+  return res.status(200).json({
+    video: {
+      ...videoObject,
+      thumbnail: normalizeProjectThumbnailPath(videoObject.thumbnail),
+      projectId: projectObject ? projectObject._id.toString() : videoObject.projectId,
+    },
+    project: normalizedProject,
+  });
+});
+
 router.get('/public/projects/:projectId/catalogues', async (req, res) => {
   const { projectId } = req.params;
 
