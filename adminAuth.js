@@ -635,6 +635,28 @@ function normalizeProjectThumbnailPath(thumbnailPath) {
   return '';
 }
 
+function normalizePublicProjectThumbnailPath(thumbnailPath) {
+  if (typeof thumbnailPath !== 'string' || !thumbnailPath.trim()) {
+    return '';
+  }
+
+  const trimmedPath = thumbnailPath.trim();
+  if (trimmedPath.startsWith('http://') || trimmedPath.startsWith('https://')) {
+    return trimmedPath;
+  }
+
+  const uploadsPath = normalizeProjectThumbnailPath(trimmedPath);
+  if (uploadsPath) {
+    return uploadsPath;
+  }
+
+  if (trimmedPath.startsWith('/')) {
+    return trimmedPath;
+  }
+
+  return '';
+}
+
 function normalizeProjectCharacterImagePath(imagePath) {
   return normalizeProjectThumbnailPath(imagePath);
 }
@@ -2646,15 +2668,42 @@ router.get(
   }
 );
 
-router.get('/public/videos', async (_req, res) => {
-  const videos = await Video.find({}).sort({
-    season: 1,
-    episode: 1,
-    createdAt: -1,
+router.get('/public/videos', async (req, res) => {
+  const homepageOnly = parseOptionalBoolean(req.query?.showInHomepage) === true;
+  const filter = homepageOnly ? { showInHomepage: true } : {};
+
+  const videos = await Video.find(filter)
+    .populate('projectId', 'name thumbnail')
+    .sort({
+      season: 1,
+      episode: 1,
+      createdAt: -1,
+    });
+
+  const normalizedVideos = videos.map((video) => {
+    const videoObject = video.toObject();
+    const projectObject =
+      typeof videoObject.projectId === 'object' && videoObject.projectId
+        ? videoObject.projectId
+        : null;
+
+    return {
+      ...videoObject,
+      thumbnail: normalizeProjectThumbnailPath(videoObject.thumbnail),
+      projectId: projectObject
+        ? projectObject._id.toString()
+        : typeof videoObject.projectId === 'string'
+          ? videoObject.projectId
+          : videoObject.projectId?.toString?.() || '',
+      projectTitle: projectObject?.name || '',
+      projectThumbnail: projectObject
+        ? normalizePublicProjectThumbnailPath(projectObject.thumbnail)
+        : '',
+    };
   });
 
   return res.status(200).json({
-    videos,
+    videos: normalizedVideos,
   });
 });
 
