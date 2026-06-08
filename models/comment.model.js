@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
-const VALID_TARGET_TYPES = ['video', 'blog', 'breakdown'];
+const VALID_TARGET_TYPES = ['video', 'blog', 'breakdown', 'general', 'project'];
 
 const schemaOptions = {
   timestamps: true,
@@ -30,7 +30,7 @@ const commentSchema = new Schema(
     },
     targetId: {
       type: Schema.Types.ObjectId,
-      required: true,
+      default: null,
       index: true,
     },
     parentCommentId: {
