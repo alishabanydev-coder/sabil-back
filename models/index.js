@@ -9,6 +9,9 @@ const Supporter = require('./supporter.model');
 const Admin = require('./admin.model');
 const AboutUsPage = require('./aboutUsPage.model');
 const Catalogue = require('./catalogue.model');
+const DonationProject = require('./donationProject.model');
+const Donor = require('./donor.model');
+const Donation = require('./donation.model');
 
 module.exports = {
   Project,
@@ -22,4 +25,7 @@ module.exports = {
   Admin,
   AboutUsPage,
   Catalogue,
+  DonationProject,
+  Donor,
+  Donation,
 };

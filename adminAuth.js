@@ -833,7 +833,7 @@ async function getOrCreateSiteSettings() {
   const siteSettings = await SiteSettings.findOneAndUpdate(
     { singletonKey: 'main' },
     { $setOnInsert: { singletonKey: 'main' } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
 
   return siteSettings;
@@ -843,7 +843,7 @@ async function getOrCreateAppCatalogueConfig() {
   const config = await AppCatalogueConfig.findOneAndUpdate(
     { singletonKey: 'main' },
     { $setOnInsert: { singletonKey: 'main' } },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
 
   return config;
@@ -990,7 +990,7 @@ async function getOrCreateAboutUsPage() {
         isActive: true,
       },
     },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true }
   );
 
   return aboutUsPage;
@@ -1540,7 +1540,7 @@ router.patch('/admins/:id', authenticateAdmin, requireSuperAdmin, async (req, re
 
   try {
     const admin = await Admin.findByIdAndUpdate(id, updates, {
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
     });
 
@@ -3353,7 +3353,7 @@ router.patch(
       const aboutUsPage = await AboutUsPage.findOneAndUpdate(
         { singletonKey: 'main' },
         updates,
-        { new: true, runValidators: true }
+        { returnDocument: 'after', runValidators: true }
       );
 
       return res.status(200).json({
@@ -3442,7 +3442,7 @@ router.patch(
       const siteSettings = await SiteSettings.findOneAndUpdate(
         { singletonKey: 'main' },
         { $set: updates },
-        { new: true, runValidators: true }
+        { returnDocument: 'after', runValidators: true }
       );
 
       return res.status(200).json({
@@ -3696,7 +3696,7 @@ router.patch(
 
       try {
         const item = await Catalogue.findByIdAndUpdate(id, catalogueUpdates, {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         });
 
@@ -3766,7 +3766,7 @@ router.patch(
 
     try {
       const item = await model.findByIdAndUpdate(id, updates, {
-        new: true,
+        returnDocument: 'after',
         runValidators: true,
       });
 
@@ -4067,7 +4067,7 @@ router.put(
         id,
         updateDocument,
         {
-          new: true,
+          returnDocument: 'after',
           runValidators: true,
         }
       );

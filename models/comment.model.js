@@ -2,7 +2,14 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
-const VALID_TARGET_TYPES = ['video', 'blog', 'breakdown', 'general', 'project'];
+const VALID_TARGET_TYPES = [
+  'video',
+  'blog',
+  'breakdown',
+  'general',
+  'project',
+  'projectDonation',
+];
 
 const schemaOptions = {
   timestamps: true,
