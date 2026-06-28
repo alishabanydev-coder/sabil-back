@@ -126,6 +126,11 @@ const donationProjectSchema = new Schema(
       default: 0,
       min: 0,
     },
+    donorCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     currency: {
       type: String,
       enum: DONATION_CURRENCIES,

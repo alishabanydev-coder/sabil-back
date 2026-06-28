@@ -120,6 +120,7 @@ function createDonationProjectAdminRoutes({
     return {
       ...plain,
       poster: normalizeStoredAssetPath(plain.poster),
+      donorCount: Number(plain.donorCount ?? 0),
       sections: Array.isArray(plain.sections)
         ? plain.sections.map((section) => ({
             ...section,
@@ -316,6 +317,10 @@ function createDonationProjectAdminRoutes({
       body.raisedAmount === undefined || body.raisedAmount === ''
         ? 0
         : Number(body.raisedAmount);
+    const donorCount =
+      body.donorCount === undefined || body.donorCount === ''
+        ? 0
+        : Number(body.donorCount);
     const currency = body.currency === 'INR' ? 'INR' : 'USD';
     const status =
       body.status === 'finished' || body.status === 'paused'
@@ -364,6 +369,7 @@ function createDonationProjectAdminRoutes({
       shortDescription,
       goalAmount,
       raisedAmount,
+      donorCount,
       currency,
       status,
       startDate,
@@ -386,6 +392,14 @@ function createDonationProjectAdminRoutes({
 
     if (!Number.isFinite(fields.raisedAmount) || fields.raisedAmount < 0) {
       return 'Raised amount must be a valid non-negative number.';
+    }
+
+    if (!Number.isFinite(fields.donorCount) || fields.donorCount < 0) {
+      return 'Donor count must be a valid non-negative number.';
+    }
+
+    if (!Number.isInteger(fields.donorCount)) {
+      return 'Donor count must be a whole number.';
     }
 
     if (!fields.startDate || Number.isNaN(fields.startDate.getTime())) {
@@ -413,6 +427,97 @@ function createDonationProjectAdminRoutes({
 
     return '';
   }
+
+  router.get('/public/donation-projects', async (_req, res) => {
+    const projects = await DonationProject.find({ showOnDonationPage: true })
+      .sort({ listOrder: 1, createdAt: -1 })
+      .select(
+        'title slug poster shortDescription goalAmount raisedAmount donorCount currency status listOrder'
+      )
+      .lean();
+
+    return res.status(200).json({
+      donationProjects: projects.map(normalizeDonationProjectRecord),
+    });
+  });
+
+  router.get('/public/donation-projects/:slugOrId', async (req, res) => {
+    const { slugOrId } = req.params;
+    const query = mongoose.Types.ObjectId.isValid(slugOrId)
+      ? { _id: slugOrId }
+      : { slug: String(slugOrId).trim().toLowerCase() };
+
+    const project = await DonationProject.findOne({
+      ...query,
+      showOnDonationPage: true,
+    }).lean();
+
+    if (!project) {
+      return res.status(404).json({
+        message: 'Donation project not found.',
+      });
+    }
+
+    const updateRefs = Array.isArray(project.updateRefs) ? project.updateRefs : [];
+    const sortedRefs = updateRefs
+      .slice()
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+    const updates = [];
+
+    for (const ref of sortedRefs) {
+      if (ref.refType === 'Blog') {
+        const blog = await Blog.findById(ref.refId).lean();
+        if (!blog) {
+          continue;
+        }
+
+        updates.push({
+          id: blog._id.toString(),
+          refType: 'Blog',
+          order: ref.order ?? 0,
+          title: blog.title,
+          subHeader: blog.subHeader ?? '',
+          content: blog.content,
+          createdAt: blog.createdAt,
+          authorName: 'Sabeel Media Cast',
+          authorAvatar: '/avatar1.png',
+          images: Array.isArray(blog.image)
+            ? blog.image.map((image) => normalizeStoredAssetPath(image)).filter(Boolean)
+            : [],
+          videoUrl: blog.videoUrl ?? '',
+        });
+        continue;
+      }
+
+      const breakdown = await ProjectBreakDown.findById(ref.refId).lean();
+      if (!breakdown) {
+        continue;
+      }
+
+      updates.push({
+        id: breakdown._id.toString(),
+        refType: 'BreakDown',
+        order: ref.order ?? 0,
+        title: breakdown.title,
+        content: breakdown.content,
+        createdAt: breakdown.createdAt,
+        authorName: 'Sabeel Media Cast',
+        authorAvatar: '/avatar1.png',
+        images: breakdown.thumbnail
+          ? [normalizeStoredAssetPath(breakdown.thumbnail)].filter(Boolean)
+          : [],
+        videoUrl: breakdown.videoUrl ?? '',
+      });
+    }
+
+    return res.status(200).json({
+      donationProject: {
+        ...normalizeDonationProjectRecord(project),
+        updates,
+      },
+    });
+  });
 
   router.get(
     '/donation-projects',
@@ -525,6 +630,7 @@ function createDonationProjectAdminRoutes({
           shortDescription: fields.shortDescription,
           goalAmount: fields.goalAmount,
           raisedAmount: fields.raisedAmount,
+          donorCount: fields.donorCount,
           currency: fields.currency,
           sections: parsedSections.sections,
           faq: parsedFaq.faq,
@@ -652,6 +758,7 @@ function createDonationProjectAdminRoutes({
         project.shortDescription = fields.shortDescription;
         project.goalAmount = fields.goalAmount;
         project.raisedAmount = fields.raisedAmount;
+        project.donorCount = fields.donorCount;
         project.currency = fields.currency;
         project.startDate = fields.startDate;
         project.endDate = fields.endDate;
