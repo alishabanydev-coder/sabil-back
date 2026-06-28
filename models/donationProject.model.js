@@ -105,6 +105,11 @@ const donationProjectSchema = new Schema(
       required: true,
       trim: true,
     },
+    videoUrl: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     shortDescription: {
       type: String,
       trim: true,

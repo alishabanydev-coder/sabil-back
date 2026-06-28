@@ -45,24 +45,6 @@ const socialMediaLinkSchema = new Schema({
   },
 });
 
-const donationSchema = new Schema(
-  {
-    name: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 100,
-    },
-    link: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 500,
-    },
-  },
-  { _id: false }
-);
-
 const siteSettingsSchema = new Schema(
   {
     singletonKey: {
@@ -78,13 +60,6 @@ const siteSettingsSchema = new Schema(
     socialMediaLinks: {
       type: [socialMediaLinkSchema],
       default: [],
-    },
-    donation: {
-      type: donationSchema,
-      default: {
-        name: 'Donate Here',
-        link: 'https://example.com/donate',
-      },
     },
   },
   schemaOptions

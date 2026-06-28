@@ -15,8 +15,8 @@ const ADMIN_TABS = [
   'users',
   'socialMedia',
   'aboutUs',
-  'donation',
   'admins',
+  'donation',
 ];
 
 const GRANTABLE_ADMIN_TABS = ADMIN_TABS.filter(
