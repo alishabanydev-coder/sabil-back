@@ -17,9 +17,12 @@ const AboutUsPage = require('./models/aboutUsPage.model');
 const Catalogue = require('./models/catalogue.model');
 const AppCatalogueConfig = require('./models/appCatalogueConfig.model');
 const DonationProject = require('./models/donationProject.model');
+const User = require('./models/user.model');
+const Donation = require('./models/donation.model');
 const {
   createDonationProjectAdminRoutes,
 } = require('./donationProjectAdminRoutes');
+const { createUserAdminRoutes } = require('./userAdminRoutes');
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
@@ -984,13 +987,21 @@ async function getOrCreateAboutUsPage() {
   return aboutUsPage;
 }
 
-const COMMENT_TARGET_TYPES = ['video', 'blog', 'breakdown', 'general', 'project'];
+const COMMENT_TARGET_TYPES = [
+  'video',
+  'blog',
+  'breakdown',
+  'general',
+  'project',
+  'projectDonation',
+];
 
 const COMMENT_TARGET_MODELS = {
   video: Video,
   blog: Blog,
   breakdown: ProjectBreakDown,
   project: Project,
+  projectDonation: DonationProject,
 };
 
 function normalizeCommentTargetType(value) {
@@ -1076,6 +1087,10 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
     return Boolean(
       breakdown?.projectId && allowedProjectIds.includes(breakdown.projectId.toString())
     );
+  }
+
+  if (targetType === 'projectDonation') {
+    return hasPermission(admin, 'donation', 'read');
   }
 
   return false;
@@ -4526,6 +4541,16 @@ createDonationProjectAdminRoutes({
   deleteUploadedFiles,
   deleteUploadedFile,
   getUploadedFilesByField,
+});
+
+createUserAdminRoutes({
+  router,
+  mongoose,
+  User,
+  Donation,
+  DonationProject,
+  authenticateAdmin,
+  requireTabPermission,
 });
 
 module.exports = router;

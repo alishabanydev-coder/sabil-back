@@ -17,6 +17,12 @@ const schemaOptions = {
 
 const commentSchema = new Schema(
   {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     text: {
       type: String,
       required: true,
@@ -28,6 +34,11 @@ const commentSchema = new Schema(
       required: true,
       trim: true,
       maxlength: 120,
+    },
+    avatar: {
+      type: String,
+      default: null,
+      trim: true,
     },
     targetType: {
       type: String,
@@ -63,6 +74,7 @@ const commentSchema = new Schema(
 commentSchema.index({ targetType: 1, targetId: 1, createdAt: -1 });
 commentSchema.index({ parentCommentId: 1, createdAt: 1 });
 commentSchema.index({ username: 1 });
+commentSchema.index({ userId: 1, createdAt: -1 });
 commentSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Comment', commentSchema);

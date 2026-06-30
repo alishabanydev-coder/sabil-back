@@ -7,13 +7,14 @@ const schemaOptions = {
 };
 
 const DONATION_CURRENCIES = ['USD', 'INR'];
+const DONATION_SOURCES = ['manual', 'patreon', 'whatsapp'];
 
 const donationSchema = new Schema(
   {
-    donorId: {
+    userId: {
       type: Schema.Types.ObjectId,
-      ref: 'Donor',
-      required: true,
+      ref: 'User',
+      default: null,
       index: true,
     },
     donationProjectId: {
@@ -32,11 +33,28 @@ const donationSchema = new Schema(
       enum: DONATION_CURRENCIES,
       required: true,
     },
+    source: {
+      type: String,
+      enum: DONATION_SOURCES,
+      default: 'manual',
+    },
+    externalDonorName: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 120,
+    },
+    notes: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 500,
+    },
   },
   schemaOptions
 );
 
 donationSchema.index({ donationProjectId: 1, createdAt: -1 });
-donationSchema.index({ donorId: 1, createdAt: -1 });
+donationSchema.index({ userId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Donation', donationSchema);
