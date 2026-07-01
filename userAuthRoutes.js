@@ -91,7 +91,7 @@ function buildUserToken(user) {
     getUserJwtSecret(),
     {
       subject: authUser.id,
-      expiresIn: '7d',
+      expiresIn: '1d',
     }
   );
 }

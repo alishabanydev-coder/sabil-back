@@ -311,7 +311,7 @@ function buildToken(admin) {
     getJwtSecret(),
     {
       subject: authAdmin.id,
-      expiresIn: '8h',
+      expiresIn: '1h',
     }
   );
 }
