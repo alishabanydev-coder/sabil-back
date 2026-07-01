@@ -1005,7 +1005,21 @@ const COMMENT_TARGET_MODELS = {
 };
 
 function normalizeCommentTargetType(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const normalized = value.trim().toLowerCase();
+  const aliases = {
+    video: 'video',
+    blog: 'blog',
+    breakdown: 'breakdown',
+    general: 'general',
+    project: 'project',
+    projectdonation: 'projectDonation',
+  };
+
+  return aliases[normalized] || '';
 }
 
 function isValidCommentTargetType(targetType) {
@@ -1068,6 +1082,10 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
     return false;
   }
 
+  if (targetType === 'projectDonation') {
+    return hasPermission(admin, 'donation', 'read');
+  }
+
   const allowedProjectIds = getAllowedChannelProjectIds(admin);
   if (!Array.isArray(allowedProjectIds) || allowedProjectIds.length === 0) {
     return false;
@@ -1087,10 +1105,6 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
     return Boolean(
       breakdown?.projectId && allowedProjectIds.includes(breakdown.projectId.toString())
     );
-  }
-
-  if (targetType === 'projectDonation') {
-    return hasPermission(admin, 'donation', 'read');
   }
 
   return false;
@@ -2390,45 +2404,79 @@ router.get(
 
     if (req.admin?.role !== ADMIN_ROLES.SUPER_ADMIN) {
       const allowedProjectIds = getAllowedChannelProjectIds(req.admin);
-      if (!Array.isArray(allowedProjectIds) || allowedProjectIds.length === 0) {
+      const hasDonationRead = hasPermission(req.admin, 'donation', 'read');
+      const hasChannelScope =
+        Array.isArray(allowedProjectIds) && allowedProjectIds.length > 0;
+
+      if (!hasChannelScope && !hasDonationRead) {
         return res.status(200).json({
           comments: [],
         });
       }
 
-      const [videos, breakdowns] = await Promise.all([
-        Video.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
-        ProjectBreakDown.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
-      ]);
+      if (!hasChannelScope && hasDonationRead) {
+        if (filter.targetType === 'blog' || filter.targetType === 'general') {
+          return res.status(200).json({
+            comments: [],
+          });
+        }
 
-      const allowedVideoIds = videos.map((item) => item._id.toString());
-      const allowedBreakdownIds = breakdowns.map((item) => item._id.toString());
+        if (!filter.targetType) {
+          filter.targetType = 'projectDonation';
+        } else if (filter.targetType !== 'projectDonation') {
+          return res.status(200).json({
+            comments: [],
+          });
+        }
+      }
 
-      if (filter.targetType === 'video') {
-        filter.targetId = { $in: allowedVideoIds };
-      } else if (filter.targetType === 'breakdown') {
-        filter.targetId = { $in: allowedBreakdownIds };
-      } else if (filter.targetType === 'project') {
-        filter.targetId = { $in: allowedProjectIds };
-      } else if (filter.targetType === 'blog' || filter.targetType === 'general') {
-        return res.status(200).json({
-          comments: [],
-        });
-      } else {
-        filter.$or = [
-          {
-            targetType: 'video',
-            targetId: { $in: allowedVideoIds },
-          },
-          {
-            targetType: 'breakdown',
-            targetId: { $in: allowedBreakdownIds },
-          },
-          {
-            targetType: 'project',
-            targetId: { $in: allowedProjectIds },
-          },
-        ];
+      if (hasChannelScope) {
+        const [videos, breakdowns] = await Promise.all([
+          Video.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
+          ProjectBreakDown.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
+        ]);
+
+        const allowedVideoIds = videos.map((item) => item._id.toString());
+        const allowedBreakdownIds = breakdowns.map((item) => item._id.toString());
+
+        if (filter.targetType === 'video') {
+          filter.targetId = { $in: allowedVideoIds };
+        } else if (filter.targetType === 'breakdown') {
+          filter.targetId = { $in: allowedBreakdownIds };
+        } else if (filter.targetType === 'project') {
+          filter.targetId = { $in: allowedProjectIds };
+        } else if (filter.targetType === 'projectDonation') {
+          if (!hasDonationRead) {
+            return res.status(200).json({
+              comments: [],
+            });
+          }
+        } else if (filter.targetType === 'blog' || filter.targetType === 'general') {
+          return res.status(200).json({
+            comments: [],
+          });
+        } else {
+          const orConditions = [
+            {
+              targetType: 'video',
+              targetId: { $in: allowedVideoIds },
+            },
+            {
+              targetType: 'breakdown',
+              targetId: { $in: allowedBreakdownIds },
+            },
+            {
+              targetType: 'project',
+              targetId: { $in: allowedProjectIds },
+            },
+          ];
+
+          if (hasDonationRead) {
+            orConditions.push({ targetType: 'projectDonation' });
+          }
+
+          filter.$or = orConditions;
+        }
       }
     }
 

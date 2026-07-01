@@ -33,7 +33,7 @@ function getUserJwtSecret() {
 }
 
 function normalizeCommentTargetType(value) {
-  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function isValidPublicCommentTargetType(targetType) {
