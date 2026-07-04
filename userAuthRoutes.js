@@ -158,6 +158,67 @@ function normalizePublicComment(comment) {
   };
 }
 
+const PUBLIC_COMMENT_PAGE_SIZE = 10;
+const PUBLIC_COMMENT_MAX_PAGE_SIZE = 50;
+
+function parseCommentPageLimit(value, defaultLimit, maxLimit) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return defaultLimit;
+  }
+
+  return Math.min(parsed, maxLimit);
+}
+
+function parseCommentPageNumber(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 1;
+  }
+
+  return parsed;
+}
+
+async function fetchPaginatedRootComments({
+  targetType,
+  targetId,
+  limit,
+  page,
+}) {
+  const rootFilter = {
+    targetType,
+    targetId,
+    parentCommentId: null,
+  };
+
+  const totalRoots = await Comment.countDocuments(rootFilter);
+  const totalPages = totalRoots === 0 ? 1 : Math.ceil(totalRoots / limit);
+  const safePage = Math.min(parseCommentPageNumber(page), totalPages);
+  const skip = (safePage - 1) * limit;
+
+  const rootComments = await Comment.find(rootFilter)
+    .sort({ createdAt: -1, _id: -1 })
+    .skip(skip)
+    .limit(limit);
+
+  const rootIds = rootComments.map((comment) => comment._id);
+
+  const replies =
+    rootIds.length > 0
+      ? await Comment.find({
+          parentCommentId: { $in: rootIds },
+        }).sort({ createdAt: 1, _id: 1 })
+      : [];
+
+  return {
+    comments: [...rootComments, ...replies],
+    page: safePage,
+    limit,
+    totalRoots,
+    totalPages,
+  };
+}
+
 router.post('/register', async (req, res) => {
   const jwtSecret = getUserJwtSecret();
   if (!jwtSecret) {
@@ -262,12 +323,18 @@ router.get('/me', authenticateUser, (req, res) => {
 });
 
 router.get('/public/comments', async (req, res) => {
-  const { targetType, targetId } = req.query || {};
+  const { targetType, targetId, limit, page } = req.query || {};
   const normalizedTargetType = normalizeCommentTargetType(targetType);
   const normalizedTargetId = normalizeCommentTargetId(
     normalizedTargetType,
     targetId
   );
+  const pageLimit = parseCommentPageLimit(
+    limit,
+    PUBLIC_COMMENT_PAGE_SIZE,
+    PUBLIC_COMMENT_MAX_PAGE_SIZE
+  );
+  const pageNumber = parseCommentPageNumber(page);
 
   if (!isValidPublicCommentTargetType(normalizedTargetType)) {
     return res.status(400).json({
@@ -287,13 +354,19 @@ router.get('/public/comments', async (req, res) => {
     });
   }
 
-  const comments = await Comment.find({
+  const pageResult = await fetchPaginatedRootComments({
     targetType: normalizedTargetType,
     targetId: normalizedTargetId,
-  }).sort({ createdAt: -1 });
+    limit: pageLimit,
+    page: pageNumber,
+  });
 
   return res.status(200).json({
-    comments: comments.map(normalizePublicComment),
+    comments: pageResult.comments.map(normalizePublicComment),
+    page: pageResult.page,
+    limit: pageResult.limit,
+    totalRoots: pageResult.totalRoots,
+    totalPages: pageResult.totalPages,
   });
 });
 

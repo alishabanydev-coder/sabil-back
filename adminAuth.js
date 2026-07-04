@@ -1106,6 +1106,105 @@ function buildAdminCommentThread(comments) {
   }));
 }
 
+const ADMIN_COMMENT_THREAD_PAGE_SIZE = 10;
+const ADMIN_COMMENT_THREAD_MAX_PAGE_SIZE = 50;
+
+function parseAdminCommentPageLimit(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return ADMIN_COMMENT_THREAD_PAGE_SIZE;
+  }
+
+  return Math.min(parsed, ADMIN_COMMENT_THREAD_MAX_PAGE_SIZE);
+}
+
+function encodeAdminCommentCursor(comment) {
+  if (!comment?.createdAt || !comment?._id) {
+    return null;
+  }
+
+  return `${new Date(comment.createdAt).toISOString()}:${comment._id.toString()}`;
+}
+
+function parseAdminCommentCursor(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+
+  const separatorIndex = value.lastIndexOf(':');
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const createdAtValue = value.slice(0, separatorIndex);
+  const id = value.slice(separatorIndex + 1);
+  const createdAt = new Date(createdAtValue);
+
+  if (Number.isNaN(createdAt.getTime()) || !mongoose.Types.ObjectId.isValid(id)) {
+    return null;
+  }
+
+  return { createdAt, id };
+}
+
+function buildOlderAdminRootCommentCursorFilter(cursor) {
+  if (!cursor) {
+    return {};
+  }
+
+  return {
+    $or: [
+      { createdAt: { $lt: cursor.createdAt } },
+      { createdAt: cursor.createdAt, _id: { $lt: cursor.id } },
+    ],
+  };
+}
+
+async function fetchPaginatedAdminRootComments({
+  targetType,
+  targetId,
+  limit,
+  cursor,
+}) {
+  const parsedCursor = parseAdminCommentCursor(cursor);
+  if (cursor && !parsedCursor) {
+    return { error: 'Invalid comments cursor.' };
+  }
+
+  const rootFilter = {
+    targetType,
+    targetId,
+    parentCommentId: null,
+    ...buildOlderAdminRootCommentCursorFilter(parsedCursor),
+  };
+
+  const rootComments = await Comment.find(rootFilter)
+    .sort({ createdAt: -1, _id: -1 })
+    .limit(limit + 1);
+
+  const hasMore = rootComments.length > limit;
+  const pageRoots = hasMore ? rootComments.slice(0, limit) : rootComments;
+  const rootIds = pageRoots.map((comment) => comment._id);
+
+  const replies =
+    rootIds.length > 0
+      ? await Comment.find({
+          parentCommentId: { $in: rootIds },
+        }).sort({ createdAt: 1, _id: 1 })
+      : [];
+
+  const nextCursor =
+    hasMore && pageRoots.length > 0
+      ? encodeAdminCommentCursor(pageRoots[pageRoots.length - 1])
+      : null;
+
+  return {
+    comments: [...pageRoots, ...replies],
+    hasMore,
+    nextCursor,
+  };
+}
+
 async function commentTargetExists(targetType, targetId) {
   if (targetType === 'general') {
     return targetId === null || targetId === undefined;
@@ -2544,12 +2643,13 @@ router.get(
   authenticateAdmin,
   requireCommentAccess('read'),
   async (req, res) => {
-    const { targetType, targetId } = req.query || {};
+    const { targetType, targetId, limit, cursor } = req.query || {};
     const normalizedTargetType = normalizeCommentTargetType(targetType);
     const normalizedTargetId = normalizeCommentTargetId(
       normalizedTargetType,
       targetId
     );
+    const pageLimit = parseAdminCommentPageLimit(limit);
 
     if (!isValidCommentTargetType(normalizedTargetType)) {
       return res.status(400).json({
@@ -2581,15 +2681,25 @@ router.get(
       });
     }
 
-    const comments = await Comment.find({
+    const pageResult = await fetchPaginatedAdminRootComments({
       targetType: normalizedTargetType,
       targetId: normalizedTargetId,
-    }).sort({ createdAt: -1 });
+      limit: pageLimit,
+      cursor,
+    });
+
+    if (pageResult.error) {
+      return res.status(400).json({
+        message: pageResult.error,
+      });
+    }
 
     return res.status(200).json({
       targetType: normalizedTargetType,
       targetId: normalizedTargetId,
-      thread: buildAdminCommentThread(comments),
+      thread: buildAdminCommentThread(pageResult.comments),
+      hasMore: pageResult.hasMore,
+      nextCursor: pageResult.nextCursor,
     });
   }
 );
