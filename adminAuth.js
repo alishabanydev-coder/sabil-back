@@ -1055,6 +1055,57 @@ function commentTargetsMatch(firstTargetType, firstTargetId, secondTargetType, s
   );
 }
 
+function normalizeAdminCommentRecord(comment) {
+  if (!comment) {
+    return comment;
+  }
+
+  const plain = comment.toObject ? comment.toObject() : comment;
+
+  return {
+    ...plain,
+    _id:
+      typeof plain._id === 'string'
+        ? plain._id
+        : plain._id?.toString?.() || '',
+    targetId: plain.targetId ? plain.targetId.toString() : null,
+    parentCommentId: plain.parentCommentId
+      ? plain.parentCommentId.toString()
+      : null,
+    createdAt: plain.createdAt || null,
+    updatedAt: plain.updatedAt || null,
+  };
+}
+
+function buildAdminCommentThread(comments) {
+  const normalizedComments = comments.map(normalizeAdminCommentRecord);
+  const repliesByParent = new Map();
+
+  normalizedComments.forEach((comment) => {
+    if (!comment.parentCommentId) {
+      return;
+    }
+
+    const siblings = repliesByParent.get(comment.parentCommentId) || [];
+    siblings.push(comment);
+    repliesByParent.set(comment.parentCommentId, siblings);
+  });
+
+  const roots = normalizedComments.filter((comment) => !comment.parentCommentId);
+  const sortNewestFirst = (a, b) =>
+    new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+  const sortOldestFirst = (a, b) =>
+    new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+
+  roots.sort(sortNewestFirst);
+  repliesByParent.forEach((replies) => replies.sort(sortOldestFirst));
+
+  return roots.map((root) => ({
+    ...root,
+    replies: repliesByParent.get(root._id) || [],
+  }));
+}
+
 async function commentTargetExists(targetType, targetId) {
   if (targetType === 'general') {
     return targetId === null || targetId === undefined;
@@ -2484,6 +2535,61 @@ router.get(
 
     return res.status(200).json({
       comments,
+    });
+  }
+);
+
+router.get(
+  '/comments/thread',
+  authenticateAdmin,
+  requireCommentAccess('read'),
+  async (req, res) => {
+    const { targetType, targetId } = req.query || {};
+    const normalizedTargetType = normalizeCommentTargetType(targetType);
+    const normalizedTargetId = normalizeCommentTargetId(
+      normalizedTargetType,
+      targetId
+    );
+
+    if (!isValidCommentTargetType(normalizedTargetType)) {
+      return res.status(400).json({
+        message: 'A valid target type is required.',
+      });
+    }
+
+    if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
+      return res.status(400).json({
+        message: 'Target id is required for this target type.',
+      });
+    }
+
+    if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
+      return res.status(404).json({
+        message: 'Comment target not found.',
+      });
+    }
+
+    if (
+      !(await canAdminAccessCommentTarget(
+        req.admin,
+        normalizedTargetType,
+        normalizedTargetId
+      ))
+    ) {
+      return res.status(403).json({
+        message: 'You do not have access to this comment target.',
+      });
+    }
+
+    const comments = await Comment.find({
+      targetType: normalizedTargetType,
+      targetId: normalizedTargetId,
+    }).sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      targetType: normalizedTargetType,
+      targetId: normalizedTargetId,
+      thread: buildAdminCommentThread(comments),
     });
   }
 );
