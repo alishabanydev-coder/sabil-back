@@ -1,4 +1,4 @@
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 
 function rateLimitMessage(message) {
   return { message };
@@ -44,7 +44,7 @@ const commentPostRateLimit = rateLimit({
       return req.user._id.toString();
     }
 
-    return req.ip;
+    return ipKeyGenerator(req.ip);
   },
   message: rateLimitMessage(
     'Comment limit reached. You can post up to 10 comments per hour.'
