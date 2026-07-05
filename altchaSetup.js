@@ -8,6 +8,8 @@ const { deriveKey } = require('altcha-lib/algorithms/pbkdf2');
 
 let altchaInstance = null;
 
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
 async function initAltcha() {
   const secret = process.env.ALTCHA_HMAC_SECRET;
   if (!secret) {
@@ -19,8 +21,10 @@ async function initAltcha() {
     hmacKeySignatureSecret: await deriveHmacKeySecret(secret),
     createChallengeParameters: () => ({
       algorithm: 'PBKDF2/SHA-256',
-      cost: 5000,
-      counter: randomInt(5000, 10000),
+      cost: isDevelopment ? 2000 : 5000,
+      counter: isDevelopment
+        ? randomInt(2000, 4000)
+        : randomInt(5000, 10000),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     }),
     deriveKey,
