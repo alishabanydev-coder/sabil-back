@@ -8,6 +8,15 @@ const Project = require('./models/project.model');
 const Video = require('./models/video.model');
 const Blog = require('./models/blog.model');
 const ProjectBreakDown = require('./models/projectBreakDown.model');
+const {
+  altchaChallengeHandler,
+  altchaMiddleware,
+} = require('./altchaSetup');
+const {
+  userLoginRateLimit,
+  userRegisterRateLimit,
+  commentPostRateLimit,
+} = require('./rateLimits');
 
 const router = express.Router();
 
@@ -219,7 +228,9 @@ async function fetchPaginatedRootComments({
   };
 }
 
-router.post('/register', async (req, res) => {
+router.get('/altcha/challenge', altchaChallengeHandler);
+
+router.post('/register', userRegisterRateLimit, altchaMiddleware, async (req, res) => {
   const jwtSecret = getUserJwtSecret();
   if (!jwtSecret) {
     return res.status(500).json({
@@ -274,7 +285,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', userLoginRateLimit, altchaMiddleware, async (req, res) => {
   const jwtSecret = getUserJwtSecret();
   if (!jwtSecret) {
     return res.status(500).json({
@@ -370,84 +381,90 @@ router.get('/public/comments', async (req, res) => {
   });
 });
 
-router.post('/public/comments', authenticateUser, async (req, res) => {
-  const { text, targetType, targetId, parentCommentId } = req.body || {};
-  const normalizedText = typeof text === 'string' ? text.trim() : '';
-  const normalizedTargetType = normalizeCommentTargetType(targetType);
-  const normalizedTargetId = normalizeCommentTargetId(
-    normalizedTargetType,
-    targetId
-  );
+router.post(
+  '/public/comments',
+  authenticateUser,
+  commentPostRateLimit,
+  altchaMiddleware,
+  async (req, res) => {
+    const { text, targetType, targetId, parentCommentId } = req.body || {};
+    const normalizedText = typeof text === 'string' ? text.trim() : '';
+    const normalizedTargetType = normalizeCommentTargetType(targetType);
+    const normalizedTargetId = normalizeCommentTargetId(
+      normalizedTargetType,
+      targetId
+    );
 
-  if (!normalizedText || !isValidPublicCommentTargetType(normalizedTargetType)) {
-    return res.status(400).json({
-      message: 'Text and a valid target type are required.',
-    });
-  }
-
-  if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
-    return res.status(400).json({
-      message: 'Target id is required for this target type.',
-    });
-  }
-
-  if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
-    return res.status(404).json({
-      message: 'Comment target not found.',
-    });
-  }
-
-  let normalizedParentCommentId = null;
-  if (parentCommentId !== undefined && parentCommentId !== null && parentCommentId !== '') {
-    if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
+    if (!normalizedText || !isValidPublicCommentTargetType(normalizedTargetType)) {
       return res.status(400).json({
-        message: 'Invalid parent comment id.',
+        message: 'Text and a valid target type are required.',
       });
     }
 
-    const parentComment = await Comment.findById(parentCommentId);
-    if (!parentComment) {
+    if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
+      return res.status(400).json({
+        message: 'Target id is required for this target type.',
+      });
+    }
+
+    if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
       return res.status(404).json({
-        message: 'Parent comment not found.',
+        message: 'Comment target not found.',
       });
     }
 
-    if (
-      !commentTargetsMatch(
-        parentComment.targetType,
-        parentComment.targetId,
-        normalizedTargetType,
-        normalizedTargetId
-      )
-    ) {
+    let normalizedParentCommentId = null;
+    if (parentCommentId !== undefined && parentCommentId !== null && parentCommentId !== '') {
+      if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
+        return res.status(400).json({
+          message: 'Invalid parent comment id.',
+        });
+      }
+
+      const parentComment = await Comment.findById(parentCommentId);
+      if (!parentComment) {
+        return res.status(404).json({
+          message: 'Parent comment not found.',
+        });
+      }
+
+      if (
+        !commentTargetsMatch(
+          parentComment.targetType,
+          parentComment.targetId,
+          normalizedTargetType,
+          normalizedTargetId
+        )
+      ) {
+        return res.status(400).json({
+          message: 'Parent comment target does not match this comment target.',
+        });
+      }
+
+      normalizedParentCommentId = parentComment._id;
+    }
+
+    try {
+      const comment = await Comment.create({
+        userId: req.user._id,
+        text: normalizedText,
+        username: req.user.displayName,
+        avatar: req.user.avatar,
+        targetType: normalizedTargetType,
+        targetId: normalizedTargetId,
+        parentCommentId: normalizedParentCommentId,
+      });
+
+      return res.status(201).json({
+        comment: normalizePublicComment(comment),
+      });
+    } catch (error) {
       return res.status(400).json({
-        message: 'Parent comment target does not match this comment target.',
+        message: error.message,
       });
     }
-
-    normalizedParentCommentId = parentComment._id;
   }
-
-  try {
-    const comment = await Comment.create({
-      userId: req.user._id,
-      text: normalizedText,
-      username: req.user.displayName,
-      avatar: req.user.avatar,
-      targetType: normalizedTargetType,
-      targetId: normalizedTargetId,
-      parentCommentId: normalizedParentCommentId,
-    });
-
-    return res.status(201).json({
-      comment: normalizePublicComment(comment),
-    });
-  } catch (error) {
-    return res.status(400).json({
-      message: error.message,
-    });
-  }
-});
+);
 
 module.exports = {
   userAuthRouter: router,

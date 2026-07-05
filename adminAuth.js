@@ -28,6 +28,7 @@ const {
   GRANTABLE_ADMIN_TABS,
   getSuperAdminPermissions,
 } = require('./adminPermissions');
+const { adminLoginRateLimit } = require('./rateLimits');
 
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
@@ -1548,7 +1549,7 @@ function getMainPageLayoutModel(section) {
   return null;
 }
 
-router.post('/login', async (req, res) => {
+router.post('/login', adminLoginRateLimit, async (req, res) => {
   try {
     await ensureBootstrapSuperAdmin();
   } catch (error) {
