@@ -29,6 +29,7 @@ const {
   getSuperAdminPermissions,
 } = require('./adminPermissions');
 const { adminLoginRateLimit } = require('./rateLimits');
+const { altchaMiddleware } = require('./altchaSetup');
 
 const router = express.Router();
 const videoThumbnailUploadDir = path.join(__dirname, 'uploads', 'video-thumbnails');
@@ -1549,7 +1550,7 @@ function getMainPageLayoutModel(section) {
   return null;
 }
 
-router.post('/login', adminLoginRateLimit, async (req, res) => {
+router.post('/login', adminLoginRateLimit, altchaMiddleware, async (req, res) => {
   try {
     await ensureBootstrapSuperAdmin();
   } catch (error) {
