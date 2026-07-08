@@ -10,6 +10,36 @@ function createUserAdminRoutes({
   const DONATION_CURRENCIES = ['USD', 'INR'];
   const DONATION_SOURCES = ['manual', 'patreon', 'whatsapp'];
 
+  function normalizeDonationProjectRef(value) {
+    if (!value) {
+      return null;
+    }
+
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (typeof value === 'object') {
+      const id =
+        typeof value._id === 'string'
+          ? value._id
+          : value._id?.toString?.() || null;
+
+      if (value.title) {
+        return {
+          _id: id,
+          title: value.title,
+          slug: value.slug || null,
+          currency: value.currency || null,
+        };
+      }
+
+      return id;
+    }
+
+    return value.toString?.() || null;
+  }
+
   function normalizeDonationRecord(donation) {
     if (!donation) {
       return donation;
@@ -23,10 +53,11 @@ function createUserAdminRoutes({
         typeof plain._id === 'string'
           ? plain._id
           : plain._id?.toString?.() || '',
-      userId: plain.userId ? plain.userId.toString() : null,
-      donationProjectId: plain.donationProjectId
-        ? plain.donationProjectId.toString()
-        : null,
+      userId:
+        plain.userId && typeof plain.userId === 'object'
+          ? plain.userId._id?.toString?.() || plain.userId.toString()
+          : plain.userId?.toString?.() || null,
+      donationProjectId: normalizeDonationProjectRef(plain.donationProjectId),
     };
   }
 
@@ -67,7 +98,7 @@ function createUserAdminRoutes({
     authenticateAdmin,
     requireTabPermission('users', 'read'),
     async (_req, res) => {
-      const users = await User.find({}).sort({ createdAt: -1 });
+      const users = await User.find({ isActive: true }).sort({ createdAt: -1 });
       const userIds = users.map((user) => user._id);
 
       const donationStats = await Donation.aggregate([
@@ -85,6 +116,40 @@ function createUserAdminRoutes({
         },
       ]);
 
+      const donatedProjectsByUser = await Donation.aggregate([
+        {
+          $match: {
+            userId: { $in: userIds },
+          },
+        },
+        {
+          $group: {
+            _id: '$userId',
+            donationProjectIds: { $addToSet: '$donationProjectId' },
+          },
+        },
+      ]);
+
+      const allDonationProjectIds = [
+        ...new Set(
+          donatedProjectsByUser.flatMap((entry) => entry.donationProjectIds)
+        ),
+      ];
+
+      const donationProjects = allDonationProjectIds.length
+        ? await DonationProject.find({ _id: { $in: allDonationProjectIds } })
+            .select('title')
+            .lean()
+        : [];
+
+      const donationProjectTitleById = donationProjects.reduce(
+        (accumulator, project) => {
+          accumulator[project._id.toString()] = project.title;
+          return accumulator;
+        },
+        {}
+      );
+
       const statsByUserId = donationStats.reduce((accumulator, entry) => {
         accumulator[entry._id.toString()] = {
           donationCount: entry.donationCount,
@@ -92,6 +157,16 @@ function createUserAdminRoutes({
         };
         return accumulator;
       }, {});
+
+      const donatedProjectsByUserId = donatedProjectsByUser.reduce(
+        (accumulator, entry) => {
+          accumulator[entry._id.toString()] = entry.donationProjectIds
+            .map((projectId) => donationProjectTitleById[projectId.toString()])
+            .filter(Boolean);
+          return accumulator;
+        },
+        {}
+      );
 
       return res.status(200).json({
         users: users.map((user) => {
@@ -104,9 +179,71 @@ function createUserAdminRoutes({
             ...normalizeUserRecord(user),
             donationCount: stats.donationCount,
             totalAmount: stats.totalAmount,
+            donatedProjects:
+              donatedProjectsByUserId[user._id.toString()] || [],
           };
         }),
       });
+    }
+  );
+
+  router.post(
+    '/site-users',
+    authenticateAdmin,
+    requireTabPermission('users', 'create'),
+    async (req, res) => {
+      const {
+        email,
+        password,
+        displayName,
+        showAsAnonymousInDonations,
+      } = req.body || {};
+
+      const normalizedEmail =
+        typeof email === 'string' ? email.trim().toLowerCase() : '';
+      const normalizedDisplayName =
+        typeof displayName === 'string' ? displayName.trim() : '';
+      const normalizedPassword = typeof password === 'string' ? password : '';
+
+      if (!normalizedEmail || !normalizedPassword || !normalizedDisplayName) {
+        return res.status(400).json({
+          message: 'Email, password, and display name are required.',
+        });
+      }
+
+      if (normalizedPassword.length < 6) {
+        return res.status(400).json({
+          message: 'Password must be at least 6 characters.',
+        });
+      }
+
+      try {
+        const existingUser = await User.findOne({ email: normalizedEmail });
+        if (existingUser) {
+          return res.status(409).json({
+            message: 'An account with this email already exists.',
+          });
+        }
+
+        const passwordHash = await User.hashPassword(normalizedPassword);
+        const user = await User.create({
+          email: normalizedEmail,
+          passwordHash,
+          displayName: normalizedDisplayName,
+          showAsAnonymousInDonations:
+            typeof showAsAnonymousInDonations === 'boolean'
+              ? showAsAnonymousInDonations
+              : false,
+        });
+
+        return res.status(201).json({
+          user: normalizeUserRecord(user),
+        });
+      } catch (error) {
+        return res.status(400).json({
+          message: error.message,
+        });
+      }
     }
   );
 
@@ -184,6 +321,42 @@ function createUserAdminRoutes({
       await user.save();
 
       return res.status(200).json({
+        user: normalizeUserRecord(user),
+      });
+    }
+  );
+
+  router.delete(
+    '/site-users/:id',
+    authenticateAdmin,
+    requireTabPermission('users', 'delete'),
+    async (req, res) => {
+      const { id } = req.params;
+
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({
+          message: 'Invalid user id.',
+        });
+      }
+
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({
+          message: 'User not found.',
+        });
+      }
+
+      if (!user.isActive) {
+        return res.status(400).json({
+          message: 'User is already deactivated.',
+        });
+      }
+
+      user.isActive = false;
+      await user.save();
+
+      return res.status(200).json({
+        message: 'User deactivated.',
         user: normalizeUserRecord(user),
       });
     }

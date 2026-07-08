@@ -143,12 +143,24 @@ async function authenticateUser(req, res, next) {
   }
 }
 
-function normalizePublicComment(comment) {
+function normalizePublicComment(comment, userById = new Map()) {
   if (!comment) {
     return comment;
   }
 
   const plain = comment.toObject ? comment.toObject() : comment;
+  const userId =
+    plain.userId && typeof plain.userId === 'object'
+      ? plain.userId._id?.toString?.() || plain.userId.toString()
+      : plain.userId?.toString?.() || null;
+
+  const linkedUser = userId ? userById.get(userId) : null;
+  const authorPresentation = linkedUser
+    ? linkedUser.getCommentAuthorPresentation()
+    : {
+        username: plain.username,
+        avatar: plain.avatar ?? null,
+      };
 
   return {
     ...plain,
@@ -156,15 +168,43 @@ function normalizePublicComment(comment) {
       typeof plain._id === 'string'
         ? plain._id
         : plain._id?.toString?.() || '',
-    userId:
-      plain.userId && typeof plain.userId === 'object'
-        ? plain.userId._id?.toString?.() || plain.userId.toString()
-        : plain.userId?.toString?.() || null,
+    userId,
+    username: authorPresentation.username,
+    avatar: authorPresentation.avatar,
     targetId: plain.targetId ? plain.targetId.toString() : null,
     parentCommentId: plain.parentCommentId
       ? plain.parentCommentId.toString()
       : null,
   };
+}
+
+async function buildUserMapForComments(comments) {
+  const userIds = [
+    ...new Set(
+      comments
+        .map((comment) => {
+          const plain = comment.toObject ? comment.toObject() : comment;
+          if (!plain.userId) {
+            return null;
+          }
+
+          return typeof plain.userId === 'object'
+            ? plain.userId._id?.toString?.()
+            : plain.userId.toString();
+        })
+        .filter(Boolean)
+    ),
+  ];
+
+  if (!userIds.length) {
+    return new Map();
+  }
+
+  const users = await User.find({ _id: { $in: userIds } }).select(
+    'displayName avatar showAsAnonymousInDonations'
+  );
+
+  return new Map(users.map((user) => [user._id.toString(), user]));
 }
 
 const PUBLIC_COMMENT_PAGE_SIZE = 10;
@@ -372,8 +412,12 @@ router.get('/public/comments', async (req, res) => {
     page: pageNumber,
   });
 
+  const userById = await buildUserMapForComments(pageResult.comments);
+
   return res.status(200).json({
-    comments: pageResult.comments.map(normalizePublicComment),
+    comments: pageResult.comments.map((comment) =>
+      normalizePublicComment(comment, userById)
+    ),
     page: pageResult.page,
     limit: pageResult.limit,
     totalRoots: pageResult.totalRoots,
@@ -445,18 +489,19 @@ router.post(
     }
 
     try {
+      const authorPresentation = req.user.getCommentAuthorPresentation();
       const comment = await Comment.create({
         userId: req.user._id,
         text: normalizedText,
-        username: req.user.displayName,
-        avatar: req.user.avatar,
+        username: authorPresentation.username,
+        avatar: authorPresentation.avatar,
         targetType: normalizedTargetType,
         targetId: normalizedTargetId,
         parentCommentId: normalizedParentCommentId,
       });
 
       return res.status(201).json({
-        comment: normalizePublicComment(comment),
+        comment: normalizePublicComment(comment, new Map([[req.user._id.toString(), req.user]])),
       });
     } catch (error) {
       return res.status(400).json({

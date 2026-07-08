@@ -78,6 +78,21 @@ userSchema.methods.toAuthJSON = function toAuthJSON() {
     displayName: this.displayName,
     avatar: this.avatar,
     emailVerified: this.emailVerified,
+    showAsAnonymousInDonations: Boolean(this.showAsAnonymousInDonations),
+  };
+};
+
+userSchema.methods.getCommentAuthorPresentation = function getCommentAuthorPresentation() {
+  if (this.showAsAnonymousInDonations) {
+    return {
+      username: 'Anonymous',
+      avatar: null,
+    };
+  }
+
+  return {
+    username: this.displayName,
+    avatar: this.avatar ?? null,
   };
 };
 
