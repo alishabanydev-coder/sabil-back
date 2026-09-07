@@ -17,7 +17,7 @@ const appCatalogueConfigSchema = new Schema(
     },
     homeImage: {
       type: String,
-      default: '/home.png',
+      default: '/home.webp',
       trim: true,
     },
     navigationProjectIds: {

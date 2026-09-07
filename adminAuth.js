@@ -3279,7 +3279,7 @@ router.get(
       const availableProjects = availableProjectsRaw.map((item) =>
         normalizeProjectAsset(item.toObject())
       );
-      const homeImage = normalizeAppCatalogueHomeImagePath(config.homeImage) || '/home.png';
+      const homeImage = normalizeAppCatalogueHomeImagePath(config.homeImage) || '/home.webp';
 
       return res.status(200).json({
         homeImage,
@@ -3392,7 +3392,7 @@ router.put(
       const previousHomeImage = normalizeAppCatalogueHomeImagePath(config.homeImage);
       const nextHomeImage = req.file?.filename
         ? `/uploads/app-catalogue/${req.file.filename}`
-        : homeImageFromBody || previousHomeImage || '/home.png';
+        : homeImageFromBody || previousHomeImage || '/home.webp';
 
       config.navigationProjectIds = existingProjectIds;
       config.homeImage = nextHomeImage;
@@ -3774,7 +3774,7 @@ router.get('/public/app-catalogue/navigation-buttons', async (_req, res) => {
       selectedProjectsRaw.map((item) => normalizeProjectAsset(item.toObject())),
       selectedProjectIds
     );
-    const homeImage = normalizeAppCatalogueHomeImagePath(config.homeImage) || '/home.png';
+    const homeImage = normalizeAppCatalogueHomeImagePath(config.homeImage) || '/home.webp';
 
     return res.status(200).json({
       buttons: [

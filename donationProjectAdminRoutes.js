@@ -481,7 +481,7 @@ function createDonationProjectAdminRoutes({
           content: blog.content,
           createdAt: blog.createdAt,
           authorName: 'Sabeel Media Cast',
-          authorAvatar: '/avatar1.png',
+          authorAvatar: '/avatar1.webp',
           images: Array.isArray(blog.image)
             ? blog.image.map((image) => normalizeStoredAssetPath(image)).filter(Boolean)
             : [],
@@ -503,7 +503,7 @@ function createDonationProjectAdminRoutes({
         content: breakdown.content,
         createdAt: breakdown.createdAt,
         authorName: 'Sabeel Media Cast',
-        authorAvatar: '/avatar1.png',
+        authorAvatar: '/avatar1.webp',
         images: breakdown.thumbnail
           ? [normalizeStoredAssetPath(breakdown.thumbnail)].filter(Boolean)
           : [],
