@@ -55,6 +55,10 @@ const projectSchema = new Schema(
       type: [projectCharacterSchema],
       default: [],
     },
+    featuredVideoIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'Video' }],
+      default: [],
+    },
   },
   schemaOptions
 );

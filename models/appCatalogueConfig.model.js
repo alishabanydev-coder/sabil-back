@@ -34,6 +34,10 @@ const appCatalogueConfigSchema = new Schema(
       type: [{ type: Schema.Types.ObjectId, ref: 'Video' }],
       default: [],
     },
+    suggestedVideoIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'Video' }],
+      default: [],
+    },
   },
   schemaOptions
 );

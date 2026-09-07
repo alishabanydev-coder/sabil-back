@@ -53,6 +53,11 @@ const videoSchema = new Schema(
       default: null,
       min: 1,
     },
+    isPublished: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
   },
   schemaOptions
 );

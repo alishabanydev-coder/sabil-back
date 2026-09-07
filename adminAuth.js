@@ -888,6 +888,89 @@ function uniqueObjectIdStrings(values) {
   return result;
 }
 
+async function keepExistingIdsInOrder(model, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return [];
+  }
+
+  const existingDocs = await model.find({ _id: { $in: ids } }).select('_id');
+  const existingIdSet = new Set(existingDocs.map((doc) => doc._id.toString()));
+
+  return ids.filter((id) => existingIdSet.has(id));
+}
+
+async function keepPublishedVideoIdsInOrder(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return [];
+  }
+
+  const existingDocs = await Video.find(
+    publishedVideoQuery({ _id: { $in: ids } })
+  ).select('_id');
+  const existingIdSet = new Set(existingDocs.map((doc) => doc._id.toString()));
+
+  return ids.filter((id) => existingIdSet.has(id));
+}
+
+function parseOrderedObjectIdArray(value, fieldName) {
+  const parsedValue =
+    typeof value === 'string'
+      ? (() => {
+          try {
+            const parsed = JSON.parse(value);
+            return Array.isArray(parsed) ? parsed : null;
+          } catch {
+            return null;
+          }
+        })()
+      : Array.isArray(value)
+        ? value
+        : null;
+
+  if (!Array.isArray(parsedValue)) {
+    return {
+      ok: false,
+      ids: [],
+      message: `${fieldName} must be an array of ids.`,
+    };
+  }
+
+  const ids = parsedValue.map((id) => (typeof id === 'string' ? id.trim() : ''));
+  if (ids.some((id) => !id || !mongoose.Types.ObjectId.isValid(id))) {
+    return {
+      ok: false,
+      ids: [],
+      message: `${fieldName} must contain valid ids.`,
+    };
+  }
+
+  if (new Set(ids).size !== ids.length) {
+    return {
+      ok: false,
+      ids: [],
+      message: `${fieldName} must not contain duplicates.`,
+    };
+  }
+
+  return {
+    ok: true,
+    ids,
+    message: '',
+  };
+}
+
+async function getOrderedNormalizedVideos(videoIds) {
+  if (!Array.isArray(videoIds) || videoIds.length === 0) {
+    return [];
+  }
+
+  const videosRaw = await Video.find({ _id: { $in: videoIds } });
+  return sortDocumentsByIdOrder(
+    videosRaw.map((item) => normalizeAppCatalogueVideo(item.toObject())),
+    videoIds
+  ).filter(Boolean);
+}
+
 function sortDocumentsByIdOrder(documents, orderedIds) {
   const indexById = new Map(orderedIds.map((id, index) => [id, index]));
 
@@ -925,6 +1008,7 @@ function normalizeAppCatalogueVideo(video) {
   return {
     ...video,
     thumbnail: normalizeProjectThumbnailPath(video.thumbnail),
+    isPublished: video.isPublished !== false,
   };
 }
 
@@ -1350,6 +1434,27 @@ function parseOptionalBoolean(value) {
   return undefined;
 }
 
+function isVideoPublished(video) {
+  return video?.isPublished !== false;
+}
+
+function publishedVideoQuery(extra = {}) {
+  return {
+    isPublished: { $ne: false },
+    ...extra,
+  };
+}
+
+function normalizeAdminChannelVideo(video) {
+  const videoObject = video?.toObject ? video.toObject() : { ...video };
+
+  return {
+    ...videoObject,
+    thumbnail: normalizeProjectThumbnailPath(videoObject.thumbnail),
+    isPublished: videoObject.isPublished !== false,
+  };
+}
+
 function parseOptionalHomepageOrder(value) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -1416,6 +1521,14 @@ function normalizeMainPageLayoutItem(section, item) {
     return {
       ...item,
       thumbnail: directThumbnail || projectThumbnail,
+    };
+  }
+
+  if (section === MAIN_PAGE_LAYOUT_SECTIONS.video) {
+    return {
+      ...item,
+      thumbnail: normalizeProjectThumbnailPath(item.thumbnail),
+      isPublished: item.isPublished !== false,
     };
   }
 
@@ -1492,7 +1605,9 @@ async function getMainPageLayoutItems(section) {
       homepageOrder: 1,
       createdAt: -1,
     });
-    return items.map((item) => item.toObject());
+    return items.map((item) =>
+      normalizeMainPageLayoutItem(section, item.toObject())
+    );
   }
 
   if (section === MAIN_PAGE_LAYOUT_SECTIONS.comment) {
@@ -1814,7 +1929,7 @@ router.get(
     });
 
     return res.status(200).json({
-      videos,
+      videos: videos.map((video) => normalizeAdminChannelVideo(video)),
     });
   }
 );
@@ -1862,7 +1977,8 @@ router.post(
   uploadVideoThumbnail,
   async (req, res) => {
     const { projectId } = req.params;
-    const { title, description, url, videoUrl, season, episode } = req.body || {};
+    const { title, description, url, videoUrl, season, episode, isPublished } =
+      req.body || {};
 
     const videoUrlValue = typeof url === 'string' ? url : videoUrl;
     const parsedSeason = Number(season);
@@ -1922,10 +2038,11 @@ router.post(
         projectId,
         season: parsedSeason,
         episode: parsedEpisode,
+        isPublished: parseOptionalBoolean(isPublished) !== false,
       });
 
       return res.status(201).json({
-        video,
+        video: normalizeAdminChannelVideo(video),
       });
     } catch (error) {
       deleteUploadedFile(req.file);
@@ -1998,7 +2115,7 @@ router.patch(
   uploadVideoThumbnail,
   async (req, res) => {
     const { projectId, videoId } = req.params;
-    const { title, description, url, videoUrl, thumbnail, season, episode } =
+    const { title, description, url, videoUrl, thumbnail, season, episode, isPublished } =
       req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(videoId)) {
@@ -2072,6 +2189,7 @@ router.patch(
       video.thumbnail = nextThumbnail;
       video.season = parsedSeason;
       video.episode = parsedEpisode;
+      video.isPublished = parseOptionalBoolean(isPublished) !== false;
 
       await video.save();
       if (req.file && previousThumbnail !== nextThumbnail) {
@@ -2079,7 +2197,7 @@ router.patch(
       }
 
       return res.status(200).json({
-        video,
+        video: normalizeAdminChannelVideo(video),
       });
     } catch (error) {
       deleteUploadedFile(req.file);
@@ -2949,7 +3067,12 @@ router.get(
     }
 
     const visibleItems = items
-      .filter((item) => item && item.showInHomepage === true)
+      .filter(
+        (item) =>
+          item &&
+          item.showInHomepage === true &&
+          item.isPublished !== false
+      )
       .sort((firstItem, secondItem) => {
         const firstOrder =
           Number.isInteger(firstItem.homepageOrder) && firstItem.homepageOrder > 0
@@ -3018,7 +3141,9 @@ router.get(
 
 router.get('/public/videos', async (req, res) => {
   const homepageOnly = parseOptionalBoolean(req.query?.showInHomepage) === true;
-  const filter = homepageOnly ? { showInHomepage: true } : {};
+  const filter = publishedVideoQuery(
+    homepageOnly ? { showInHomepage: true } : {}
+  );
 
   const videos = await Video.find(filter)
     .populate('projectId', 'name thumbnail')
@@ -3069,7 +3194,7 @@ router.get('/public/videos/:videoId', async (req, res) => {
     'name thumbnail description'
   );
 
-  if (!video) {
+  if (!video || !isVideoPublished(video)) {
     return res.status(404).json({
       message: 'Video not found.',
     });
@@ -3137,7 +3262,8 @@ router.get(
   async (_req, res) => {
     try {
       const config = await getOrCreateAppCatalogueConfig();
-      const selectedProjectIds = uniqueObjectIdStrings(config.navigationProjectIds || []);
+      const storedProjectIds = uniqueObjectIdStrings(config.navigationProjectIds || []);
+      const selectedProjectIds = await keepExistingIdsInOrder(Project, storedProjectIds);
 
       const [selectedProjectsRaw, availableProjectsRaw] = await Promise.all([
         selectedProjectIds.length > 0
@@ -3257,17 +3383,10 @@ router.put(
     }
 
     try {
-      if (normalizedProjectIds.length > 0) {
-        const existingProjectsCount = await Project.countDocuments({
-          _id: { $in: normalizedProjectIds },
-        });
-        if (existingProjectsCount !== normalizedProjectIds.length) {
-          deleteUploadedFile(req.file);
-          return res.status(404).json({
-            message: 'One or more projects were not found.',
-          });
-        }
-      }
+      const existingProjectIds = await keepExistingIdsInOrder(
+        Project,
+        normalizedProjectIds
+      );
 
       const config = await getOrCreateAppCatalogueConfig();
       const previousHomeImage = normalizeAppCatalogueHomeImagePath(config.homeImage);
@@ -3275,7 +3394,7 @@ router.put(
         ? `/uploads/app-catalogue/${req.file.filename}`
         : homeImageFromBody || previousHomeImage || '/home.png';
 
-      config.navigationProjectIds = normalizedProjectIds;
+      config.navigationProjectIds = existingProjectIds;
       config.homeImage = nextHomeImage;
       await config.save();
 
@@ -3289,17 +3408,17 @@ router.put(
       }
 
       const selectedProjectsRaw =
-        normalizedProjectIds.length > 0
-          ? await Project.find({ _id: { $in: normalizedProjectIds } })
+        existingProjectIds.length > 0
+          ? await Project.find({ _id: { $in: existingProjectIds } })
           : [];
       const selectedProjects = sortDocumentsByIdOrder(
         selectedProjectsRaw.map((item) => normalizeProjectAsset(item.toObject())),
-        normalizedProjectIds
+        existingProjectIds
       );
 
       return res.status(200).json({
         homeImage: nextHomeImage,
-        selectedProjectIds: normalizedProjectIds,
+        selectedProjectIds: existingProjectIds,
         selectedProjects,
         navigationButtons: [
           {
@@ -3333,10 +3452,13 @@ router.get(
   async (_req, res) => {
     try {
       const config = await getOrCreateAppCatalogueConfig();
-      const manualVideoIds = uniqueObjectIdStrings(config.manualHomeVideoIds || []);
+      const storedManualVideoIds = uniqueObjectIdStrings(config.manualHomeVideoIds || []);
+      const manualVideoIds = await keepPublishedVideoIdsInOrder(storedManualVideoIds);
       const [availableVideosRaw, manualVideosRaw] = await Promise.all([
         Video.find({}).sort({ season: 1, episode: 1, createdAt: -1 }),
-        manualVideoIds.length > 0 ? Video.find({ _id: { $in: manualVideoIds } }) : [],
+        manualVideoIds.length > 0
+          ? Video.find(publishedVideoQuery({ _id: { $in: manualVideoIds } }))
+          : [],
       ]);
 
       const availableVideos = availableVideosRaw
@@ -3422,23 +3544,16 @@ router.put(
     }
 
     try {
-      if (normalizedManualVideoIds.length > 0) {
-        const existingVideosCount = await Video.countDocuments({
-          _id: { $in: normalizedManualVideoIds },
-        });
-        if (existingVideosCount !== normalizedManualVideoIds.length) {
-          return res.status(404).json({
-            message: 'One or more videos were not found.',
-          });
-        }
-      }
+      const existingManualVideoIds = hasManualVideoIds
+        ? await keepPublishedVideoIdsInOrder(normalizedManualVideoIds)
+        : [];
 
       const config = await getOrCreateAppCatalogueConfig();
       if (hasMode) {
         config.homeVideosMode = normalizedMode;
       }
       if (hasManualVideoIds) {
-        config.manualHomeVideoIds = normalizedManualVideoIds;
+        config.manualHomeVideoIds = existingManualVideoIds;
       }
       await config.save();
 
@@ -3457,6 +3572,187 @@ router.put(
         mode: finalMode,
         manualVideoIds: finalManualVideoIds,
         manualVideos,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.get(
+  '/app-catalogue/suggested-videos',
+  authenticateAdmin,
+  requireTabPermission('appManagement', 'read'),
+  async (_req, res) => {
+    try {
+      const config = await getOrCreateAppCatalogueConfig();
+      const storedSuggestedVideoIds = uniqueObjectIdStrings(
+        config.suggestedVideoIds || []
+      );
+      const videoIds = await keepPublishedVideoIdsInOrder(storedSuggestedVideoIds);
+      const [availableVideosRaw, suggestedVideos] = await Promise.all([
+        Video.find({}).sort({
+          season: 1,
+          episode: 1,
+          createdAt: -1,
+        }),
+        getOrderedNormalizedVideos(videoIds),
+      ]);
+
+      return res.status(200).json({
+        videoIds,
+        videos: suggestedVideos,
+        availableVideos: availableVideosRaw
+          .map((item) => normalizeAppCatalogueVideo(item.toObject()))
+          .filter(Boolean),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.put(
+  '/app-catalogue/suggested-videos',
+  authenticateAdmin,
+  requireTabPermission('appManagement', 'update'),
+  async (req, res) => {
+    const parsedVideoIds = parseOrderedObjectIdArray(
+      req.body?.videoIds,
+      'videoIds'
+    );
+
+    if (!parsedVideoIds.ok) {
+      return res.status(400).json({
+        message: parsedVideoIds.message,
+      });
+    }
+
+    try {
+      const videoIds = await keepPublishedVideoIdsInOrder(parsedVideoIds.ids);
+      const config = await getOrCreateAppCatalogueConfig();
+      config.suggestedVideoIds = videoIds;
+      await config.save();
+
+      return res.status(200).json({
+        videoIds,
+        videos: await getOrderedNormalizedVideos(videoIds),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.get(
+  '/app-catalogue/projects/:projectId/featured-videos',
+  authenticateAdmin,
+  requireTabPermission('appManagement', 'read'),
+  async (req, res) => {
+    const { projectId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      return res.status(400).json({
+        message: 'Invalid project id.',
+      });
+    }
+
+    try {
+      const project = await Project.findById(projectId);
+      if (!project) {
+        return res.status(404).json({
+          message: 'Project not found.',
+        });
+      }
+
+      const storedFeaturedVideoIds = uniqueObjectIdStrings(
+        project.featuredVideoIds || []
+      );
+      const [channelVideosRaw, existingFeaturedIds] = await Promise.all([
+        Video.find({ projectId }).sort({
+          season: 1,
+          episode: 1,
+          createdAt: -1,
+        }),
+        keepPublishedVideoIdsInOrder(storedFeaturedVideoIds),
+      ]);
+      const availableVideos = channelVideosRaw
+        .map((item) => normalizeAppCatalogueVideo(item.toObject()))
+        .filter(Boolean);
+      const availableIdSet = new Set(
+        availableVideos.map((video) => String(video._id))
+      );
+      const videoIds = existingFeaturedIds.filter((id) => availableIdSet.has(id));
+
+      return res.status(200).json({
+        projectId,
+        videoIds,
+        videos: await getOrderedNormalizedVideos(videoIds),
+        availableVideos,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.put(
+  '/app-catalogue/projects/:projectId/featured-videos',
+  authenticateAdmin,
+  requireTabPermission('appManagement', 'update'),
+  async (req, res) => {
+    const { projectId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      return res.status(400).json({
+        message: 'Invalid project id.',
+      });
+    }
+
+    const parsedVideoIds = parseOrderedObjectIdArray(
+      req.body?.videoIds,
+      'videoIds'
+    );
+
+    if (!parsedVideoIds.ok) {
+      return res.status(400).json({
+        message: parsedVideoIds.message,
+      });
+    }
+
+    try {
+      const project = await Project.findById(projectId);
+      if (!project) {
+        return res.status(404).json({
+          message: 'Project not found.',
+        });
+      }
+
+      const channelVideos = await Video.find(
+        publishedVideoQuery({
+          _id: { $in: parsedVideoIds.ids },
+          projectId,
+        })
+      ).select('_id');
+      const allowedIdSet = new Set(
+        channelVideos.map((video) => video._id.toString())
+      );
+      const videoIds = parsedVideoIds.ids.filter((id) => allowedIdSet.has(id));
+      project.featuredVideoIds = videoIds;
+      await project.save();
+
+      return res.status(200).json({
+        projectId,
+        videoIds,
+        videos: await getOrderedNormalizedVideos(videoIds),
       });
     } catch (error) {
       return res.status(400).json({
@@ -3513,9 +3809,11 @@ router.get('/public/app-catalogue/home-videos', async (_req, res) => {
     const videosRaw =
       mode === 'manual'
         ? manualVideoIds.length > 0
-          ? await Video.find({ _id: { $in: manualVideoIds } })
+          ? await Video.find(
+              publishedVideoQuery({ _id: { $in: manualVideoIds } })
+            )
           : []
-        : await Video.find({}).sort({ createdAt: -1 });
+        : await Video.find(publishedVideoQuery()).sort({ createdAt: -1 });
 
     const orderedVideos =
       mode === 'manual'
@@ -3536,6 +3834,123 @@ router.get('/public/app-catalogue/home-videos', async (_req, res) => {
     });
   }
 });
+
+router.get('/public/app-catalogue/suggested-videos', async (_req, res) => {
+  try {
+    const config = await getOrCreateAppCatalogueConfig();
+    const storedSuggestedVideoIds = uniqueObjectIdStrings(
+      config.suggestedVideoIds || []
+    );
+    const videoIds = await keepExistingIdsInOrder(Video, storedSuggestedVideoIds);
+    const videos = (await getOrderedNormalizedVideos(videoIds)).filter(
+      (video) => isVideoPublished(video)
+    );
+
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      videoIds: videos.map((video) => String(video._id)),
+      videos,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message,
+    });
+  }
+});
+
+router.get('/public/app-catalogue/featured-videos', async (_req, res) => {
+  try {
+    const config = await getOrCreateAppCatalogueConfig();
+    const selectedProjectIds = uniqueObjectIdStrings(
+      config.navigationProjectIds || []
+    );
+    const projects =
+      selectedProjectIds.length > 0
+        ? await Project.find({ _id: { $in: selectedProjectIds } }).select(
+            '_id featuredVideoIds'
+          )
+        : [];
+
+    const featuredByProjectId = {};
+    await Promise.all(
+      projects.map(async (project) => {
+        const projectId = project._id.toString();
+        const storedFeaturedVideoIds = uniqueObjectIdStrings(
+          project.featuredVideoIds || []
+        );
+        const existingIds = await keepExistingIdsInOrder(
+          Video,
+          storedFeaturedVideoIds
+        );
+        const videos = (await getOrderedNormalizedVideos(existingIds)).filter(
+          (video) =>
+            String(video.projectId) === projectId && isVideoPublished(video)
+        );
+
+        featuredByProjectId[projectId] = {
+          videoIds: videos.map((video) => String(video._id)),
+          videos,
+        };
+      })
+    );
+
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      featuredByProjectId,
+    });
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message,
+    });
+  }
+});
+
+router.get(
+  '/public/app-catalogue/projects/:projectId/featured-videos',
+  async (req, res) => {
+    const { projectId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      return res.status(400).json({
+        message: 'Invalid project id.',
+      });
+    }
+
+    try {
+      const project = await Project.findById(projectId).select(
+        '_id featuredVideoIds'
+      );
+      if (!project) {
+        return res.status(404).json({
+          message: 'Project not found.',
+        });
+      }
+
+      const storedFeaturedVideoIds = uniqueObjectIdStrings(
+        project.featuredVideoIds || []
+      );
+      const existingIds = await keepExistingIdsInOrder(
+        Video,
+        storedFeaturedVideoIds
+      );
+      const videos = (await getOrderedNormalizedVideos(existingIds)).filter(
+        (video) =>
+          String(video.projectId) === projectId && isVideoPublished(video)
+      );
+
+      res.set('Cache-Control', 'no-store');
+      return res.status(200).json({
+        projectId,
+        videoIds: videos.map((video) => String(video._id)),
+        videos,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
 
 router.get(
   '/about-us',
@@ -3785,10 +4200,15 @@ router.put(
         }
       }
 
+      const homepageOrderedIds =
+        section === MAIN_PAGE_LAYOUT_SECTIONS.video
+          ? await keepPublishedVideoIdsInOrder(orderedIds)
+          : orderedIds;
+
       await model.updateMany(
         {
           showInHomepage: true,
-          _id: { $nin: orderedIds },
+          _id: { $nin: homepageOrderedIds },
         },
         {
           $set: {
@@ -3798,9 +4218,9 @@ router.put(
         }
       );
 
-      if (orderedIds.length > 0) {
+      if (homepageOrderedIds.length > 0) {
         await model.bulkWrite(
-          orderedIds.map((id, index) => ({
+          homepageOrderedIds.map((id, index) => ({
             updateOne: {
               filter: { _id: id },
               update: {
@@ -3954,6 +4374,26 @@ router.patch(
     }
 
     try {
+      if (section === MAIN_PAGE_LAYOUT_SECTIONS.video) {
+        const existingVideo = await Video.findById(id).select('isPublished');
+        if (!existingVideo) {
+          return res.status(404).json({
+            message: 'Item not found.',
+          });
+        }
+
+        const isEnablingHomepage = updates.showInHomepage === true;
+        const isSettingOrder = Number.isInteger(updates.homepageOrder);
+        if (
+          !isVideoPublished(existingVideo) &&
+          (isEnablingHomepage || isSettingOrder)
+        ) {
+          return res.status(400).json({
+            message: 'Unpublished videos cannot be added to Watch Us.',
+          });
+        }
+      }
+
       const item = await model.findByIdAndUpdate(id, updates, {
         returnDocument: 'after',
         runValidators: true,
