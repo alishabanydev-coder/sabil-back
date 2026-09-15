@@ -131,6 +131,15 @@ function createDonationProjectAdminRoutes({
               : [],
           }))
         : [],
+      steps: Array.isArray(plain.steps) ? plain.steps : [],
+      staff: Array.isArray(plain.staff)
+        ? plain.staff.map((member) => ({
+            ...member,
+            photo: member.photo
+              ? normalizeStoredAssetPath(member.photo)
+              : null,
+          }))
+        : [],
     };
   }
 
@@ -253,6 +262,102 @@ function createDonationProjectAdminRoutes({
     });
 
     return { ok: true, faq };
+  }
+
+  function parseStepsField(rawSteps) {
+    const parsed = parseJsonField(rawSteps, 'steps');
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    if (!Array.isArray(parsed.value)) {
+      return { ok: false, message: 'Steps must be an array.' };
+    }
+
+    const allowedStatuses = new Set([
+      'upcoming',
+      'in_progress',
+      'completed',
+      'skipped',
+    ]);
+
+    const steps = parsed.value.map((item, index) => {
+      const id = typeof item?.id === 'string' ? item.id.trim() : '';
+      const label = typeof item?.label === 'string' ? item.label.trim() : '';
+      const status = allowedStatuses.has(item?.status)
+        ? item.status
+        : 'upcoming';
+      const spentAmount = Number(item?.spentAmount ?? 0);
+
+      if (!id) {
+        throw new Error(`Step ${index + 1} requires an id.`);
+      }
+
+      if (!label) {
+        throw new Error(`Step ${index + 1} requires a label.`);
+      }
+
+      if (!Number.isFinite(spentAmount) || spentAmount < 0) {
+        throw new Error(`Step ${index + 1} spent amount must be non-negative.`);
+      }
+
+      return {
+        id,
+        label,
+        status,
+        spentAmount: status === 'upcoming' ? 0 : spentAmount,
+        order:
+          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
+      };
+    });
+
+    return { ok: true, steps };
+  }
+
+  function parseStaffField(rawStaff) {
+    const parsed = parseJsonField(rawStaff, 'staff');
+    if (!parsed.ok) {
+      return parsed;
+    }
+
+    if (!Array.isArray(parsed.value)) {
+      return { ok: false, message: 'Staff must be an array.' };
+    }
+
+    const staff = parsed.value.map((item, index) => {
+      const id = typeof item?.id === 'string' ? item.id.trim() : '';
+      const name = typeof item?.name === 'string' ? item.name.trim() : '';
+      const role = typeof item?.role === 'string' ? item.role.trim() : '';
+      const bio =
+        typeof item?.bio === 'string' && item.bio.trim()
+          ? item.bio.trim()
+          : null;
+      const photo = normalizeStoredAssetPath(item?.photo);
+
+      if (!id) {
+        throw new Error(`Staff member ${index + 1} requires an id.`);
+      }
+
+      if (!name) {
+        throw new Error(`Staff member ${index + 1} requires a name.`);
+      }
+
+      if (!role) {
+        throw new Error(`Staff member ${index + 1} requires a role.`);
+      }
+
+      return {
+        id,
+        name,
+        role,
+        photo: photo || null,
+        bio,
+        order:
+          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
+      };
+    });
+
+    return { ok: true, staff };
   }
 
   async function parseUpdateRefsField(rawUpdateRefs) {
@@ -590,6 +695,8 @@ function createDonationProjectAdminRoutes({
 
       let parsedSections;
       let parsedFaq;
+      let parsedSteps;
+      let parsedStaff;
       let parsedUpdateRefs;
 
       try {
@@ -606,6 +713,18 @@ function createDonationProjectAdminRoutes({
         if (!parsedFaq.ok) {
           deleteUploadedFiles(uploadedFiles);
           return res.status(400).json({ message: parsedFaq.message });
+        }
+
+        parsedSteps = parseStepsField(req.body?.steps);
+        if (!parsedSteps.ok) {
+          deleteUploadedFiles(uploadedFiles);
+          return res.status(400).json({ message: parsedSteps.message });
+        }
+
+        parsedStaff = parseStaffField(req.body?.staff);
+        if (!parsedStaff.ok) {
+          deleteUploadedFiles(uploadedFiles);
+          return res.status(400).json({ message: parsedStaff.message });
         }
 
         parsedUpdateRefs = await parseUpdateRefsField(req.body?.updateRefs);
@@ -634,6 +753,8 @@ function createDonationProjectAdminRoutes({
           currency: fields.currency,
           sections: parsedSections.sections,
           faq: parsedFaq.faq,
+          steps: parsedSteps.steps,
+          staff: parsedStaff.staff,
           startDate: fields.startDate,
           endDate: fields.endDate,
           status: fields.status,
@@ -714,6 +835,8 @@ function createDonationProjectAdminRoutes({
 
       let parsedSections;
       let parsedFaq;
+      let parsedSteps;
+      let parsedStaff;
       let parsedUpdateRefs;
 
       try {
@@ -733,6 +856,22 @@ function createDonationProjectAdminRoutes({
           if (!parsedFaq.ok) {
             deleteUploadedFiles(uploadedFiles);
             return res.status(400).json({ message: parsedFaq.message });
+          }
+        }
+
+        if (req.body?.steps !== undefined) {
+          parsedSteps = parseStepsField(req.body.steps);
+          if (!parsedSteps.ok) {
+            deleteUploadedFiles(uploadedFiles);
+            return res.status(400).json({ message: parsedSteps.message });
+          }
+        }
+
+        if (req.body?.staff !== undefined) {
+          parsedStaff = parseStaffField(req.body.staff);
+          if (!parsedStaff.ok) {
+            deleteUploadedFiles(uploadedFiles);
+            return res.status(400).json({ message: parsedStaff.message });
           }
         }
 
@@ -784,6 +923,14 @@ function createDonationProjectAdminRoutes({
 
         if (parsedFaq?.ok) {
           project.faq = parsedFaq.faq;
+        }
+
+        if (parsedSteps?.ok) {
+          project.steps = parsedSteps.steps;
+        }
+
+        if (parsedStaff?.ok) {
+          project.staff = parsedStaff.staff;
         }
 
         if (parsedUpdateRefs?.ok) {

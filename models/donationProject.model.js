@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
@@ -6,8 +6,16 @@ const schemaOptions = {
   timestamps: true,
 };
 
-const DONATION_PROJECT_STATUSES = ['ongoing', 'finished', 'paused'];
-const DONATION_CURRENCIES = ['USD', 'INR'];
+const DONATION_PROJECT_STATUSES = ["ongoing", "finished", "paused"];
+const DONATION_PROJECT_STEP_STATUSES = [
+  "upcoming",
+  "in_progress",
+  "completed",
+  "skipped",
+];
+const DONATION_CURRENCIES = ["USD", "INR"];
+
+//FIXME: fix this Donation step / chart / staff in the ADMIN PANEL
 
 const contentSectionSchema = new Schema(
   {
@@ -65,11 +73,85 @@ const faqItemSchema = new Schema(
   { _id: false }
 );
 
+const projectStepSchema = new Schema(
+  {
+    id: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 120,
+    },
+    label: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 120,
+    },
+    status: {
+      type: String,
+      enum: DONATION_PROJECT_STEP_STATUSES,
+      required: true,
+      default: "upcoming",
+    },
+    spentAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    order: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
+const staffMemberSchema = new Schema(
+  {
+    id: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 120,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 140,
+    },
+    role: {
+      type: String,
+      required: true,
+      trim: true,
+      maxlength: 140,
+    },
+    photo: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    bio: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 2000,
+    },
+    order: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { _id: false }
+);
+
 const updateRefSchema = new Schema(
   {
     refType: {
       type: String,
-      enum: ['Blog', 'BreakDown'],
+      enum: ["Blog", "BreakDown"],
       required: true,
     },
     refId: {
@@ -114,7 +196,7 @@ const donationProjectSchema = new Schema(
       type: String,
       trim: true,
       maxlength: 500,
-      default: '',
+      default: "",
     },
     goalAmount: {
       type: Number,
@@ -135,7 +217,7 @@ const donationProjectSchema = new Schema(
       type: String,
       enum: DONATION_CURRENCIES,
       required: true,
-      default: 'USD',
+      default: "USD",
     },
     sections: {
       type: [contentSectionSchema],
@@ -143,6 +225,14 @@ const donationProjectSchema = new Schema(
     },
     faq: {
       type: [faqItemSchema],
+      default: [],
+    },
+    steps: {
+      type: [projectStepSchema],
+      default: [],
+    },
+    staff: {
+      type: [staffMemberSchema],
       default: [],
     },
     startDate: {
@@ -157,12 +247,12 @@ const donationProjectSchema = new Schema(
       type: String,
       enum: DONATION_PROJECT_STATUSES,
       required: true,
-      default: 'ongoing',
+      default: "ongoing",
       index: true,
     },
     projectId: {
       type: Schema.Types.ObjectId,
-      ref: 'Project',
+      ref: "Project",
       default: null,
       index: true,
     },
@@ -188,4 +278,4 @@ donationProjectSchema.index({ slug: 1 }, { unique: true });
 donationProjectSchema.index({ status: 1, showOnDonationPage: 1, listOrder: 1 });
 donationProjectSchema.index({ title: 1 });
 
-module.exports = mongoose.model('DonationProject', donationProjectSchema);
+module.exports = mongoose.model("DonationProject", donationProjectSchema);
