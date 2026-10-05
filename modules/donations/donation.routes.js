@@ -16,11 +16,15 @@ function createDonationProjectAdminRoutes({
 }) {
   const donationPosterUploadDir = path.join(
     __dirname,
+    '..',
+    '..',
     'uploads',
     'donation-posters'
   );
   const donationSectionImageUploadDir = path.join(
     __dirname,
+    '..',
+    '..',
     'uploads',
     'donation-section-images'
   );

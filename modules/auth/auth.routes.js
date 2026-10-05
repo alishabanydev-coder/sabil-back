@@ -1,22 +1,22 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
-const User = require('./models/user.model');
-const Comment = require('./models/comment.model');
-const DonationProject = require('./models/donationProject.model');
-const Project = require('./models/project.model');
-const Video = require('./models/video.model');
-const Blog = require('./models/blog.model');
-const ProjectBreakDown = require('./models/projectBreakDown.model');
+const User = require('../../models/user.model');
+const Comment = require('../../models/comment.model');
+const DonationProject = require('../../models/donationProject.model');
+const Project = require('../../models/project.model');
+const Video = require('../../models/video.model');
+const Blog = require('../../models/blog.model');
+const ProjectBreakDown = require('../../models/projectBreakDown.model');
 const {
   altchaChallengeHandler,
   altchaMiddleware,
-} = require('./altchaSetup');
+} = require('../../altchaSetup');
 const {
   userLoginRateLimit,
   userRegisterRateLimit,
   commentPostRateLimit,
-} = require('./rateLimits');
+} = require('../../rateLimits');
 
 const router = express.Router();
 
