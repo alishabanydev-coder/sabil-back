@@ -13,6 +13,10 @@ const {
   hasPermission,
   requireCommentAccess,
 } = require('../../middleware/adminAuth');
+const {
+  parseOptionalBoolean,
+  parseOptionalHomepageOrder,
+} = require('../../lib/parse');
 
 const COMMENT_TARGET_TYPES = [
   'video',
@@ -286,7 +290,212 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
 
   return false;
 }
+
+// Featuring comments on the donation page is governed by either the donation
+// tab or the comments tab, since both kinds of admins have a stake in it.
+function requireDonationPageCommentAccess(action) {
+  return (req, res, next) => {
+    if (
+      hasPermission(req.admin, 'donation', action) ||
+      hasPermission(req.admin, 'comments', action)
+    ) {
+      return next();
+    }
+
+    return res.status(403).json({
+      message: `Admin ${action} access is required for donation page comments.`,
+    });
+  };
+}
+
+const DONATION_PAGE_COMMENT_SORT = {
+  showInDonationPage: -1,
+  donationPageOrder: 1,
+  createdAt: -1,
+};
+
+async function getDonationPageCommentItems() {
+  const items = await Comment.find({ parentCommentId: null }).sort(
+    DONATION_PAGE_COMMENT_SORT
+  );
+
+  return items.map(normalizeAdminCommentRecord);
+}
+
 const router = express.Router();
+
+router.get(
+  '/comments/donation-page',
+  authenticateAdmin,
+  requireDonationPageCommentAccess('read'),
+  async (_req, res) => {
+    const items = await getDonationPageCommentItems();
+
+    return res.status(200).json({
+      items,
+    });
+  }
+);
+
+router.put(
+  '/comments/donation-page',
+  authenticateAdmin,
+  requireDonationPageCommentAccess('update'),
+  async (req, res) => {
+    const orderedIds = req.body?.orderedIds;
+
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({
+        message: 'orderedIds must be an array of comment ids.',
+      });
+    }
+
+    const hasInvalidId = orderedIds.some(
+      (id) => typeof id !== 'string' || !mongoose.Types.ObjectId.isValid(id)
+    );
+    if (hasInvalidId) {
+      return res.status(400).json({
+        message: 'orderedIds must contain valid comment ids.',
+      });
+    }
+
+    if (new Set(orderedIds).size !== orderedIds.length) {
+      return res.status(400).json({
+        message: 'orderedIds must not contain duplicates.',
+      });
+    }
+
+    try {
+      if (orderedIds.length > 0) {
+        const rootCommentsCount = await Comment.countDocuments({
+          _id: { $in: orderedIds },
+          parentCommentId: null,
+        });
+
+        if (rootCommentsCount !== orderedIds.length) {
+          return res.status(404).json({
+            message: 'One or more comments were not found or are replies.',
+          });
+        }
+      }
+
+      await Comment.updateMany(
+        {
+          showInDonationPage: true,
+          _id: { $nin: orderedIds },
+        },
+        {
+          $set: {
+            showInDonationPage: false,
+            donationPageOrder: null,
+          },
+        }
+      );
+
+      if (orderedIds.length > 0) {
+        await Comment.bulkWrite(
+          orderedIds.map((id, index) => ({
+            updateOne: {
+              filter: { _id: id },
+              update: {
+                $set: {
+                  showInDonationPage: true,
+                  donationPageOrder: index + 1,
+                },
+              },
+            },
+          }))
+        );
+      }
+
+      const items = await getDonationPageCommentItems();
+
+      return res.status(200).json({
+        items,
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
+
+router.patch(
+  '/comments/:id/donation-page',
+  authenticateAdmin,
+  requireDonationPageCommentAccess('update'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid comment id.',
+      });
+    }
+
+    const body = req.body || {};
+    const updates = {};
+
+    if (Object.prototype.hasOwnProperty.call(body, 'showInDonationPage')) {
+      const parsedShowInDonationPage = parseOptionalBoolean(body.showInDonationPage);
+      if (parsedShowInDonationPage === undefined) {
+        return res.status(400).json({
+          message: 'showInDonationPage must be a boolean.',
+        });
+      }
+      updates.showInDonationPage = parsedShowInDonationPage;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'donationPageOrder')) {
+      const parsedDonationPageOrder = parseOptionalHomepageOrder(body.donationPageOrder);
+      if (parsedDonationPageOrder === undefined) {
+        return res.status(400).json({
+          message: 'donationPageOrder must be a positive integer or null.',
+        });
+      }
+      updates.donationPageOrder = parsedDonationPageOrder;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        message: 'Nothing to update.',
+      });
+    }
+
+    if (updates.showInDonationPage === false) {
+      updates.donationPageOrder = null;
+    }
+
+    try {
+      const comment = await Comment.findById(id);
+      if (!comment) {
+        return res.status(404).json({
+          message: 'Comment not found.',
+        });
+      }
+
+      const isEnabling = updates.showInDonationPage === true;
+      const isSettingOrder = Number.isInteger(updates.donationPageOrder);
+      if (comment.parentCommentId && (isEnabling || isSettingOrder)) {
+        return res.status(400).json({
+          message: 'Replies cannot be featured on the donation page.',
+        });
+      }
+
+      Object.assign(comment, updates);
+      await comment.save();
+
+      return res.status(200).json({
+        item: normalizeAdminCommentRecord(comment),
+      });
+    } catch (error) {
+      return res.status(400).json({
+        message: error.message,
+      });
+    }
+  }
+);
 
 router.post(
   '/comments',

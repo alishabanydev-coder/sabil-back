@@ -373,6 +373,39 @@ router.get('/me', authenticateUser, (req, res) => {
   });
 });
 
+const PUBLIC_DONATION_FEATURED_COMMENTS_DEFAULT_LIMIT = 6;
+const PUBLIC_DONATION_FEATURED_COMMENTS_MAX_LIMIT = 20;
+
+router.get('/public/comments/donation-featured', async (req, res) => {
+  const limit = parseCommentPageLimit(
+    req.query?.limit,
+    PUBLIC_DONATION_FEATURED_COMMENTS_DEFAULT_LIMIT,
+    PUBLIC_DONATION_FEATURED_COMMENTS_MAX_LIMIT
+  );
+
+  const featuredComments = await Comment.find({
+    showInDonationPage: true,
+    parentCommentId: null,
+  }).sort({ createdAt: -1, _id: -1 });
+
+  // Mongo sorts null before numbers; comments without an explicit order
+  // should come after the ordered ones instead.
+  const orderValue = (comment) =>
+    Number.isInteger(comment.donationPageOrder) && comment.donationPageOrder > 0
+      ? comment.donationPageOrder
+      : Number.MAX_SAFE_INTEGER;
+
+  const comments = featuredComments
+    .sort((first, second) => orderValue(first) - orderValue(second))
+    .slice(0, limit);
+
+  const userById = await buildUserMapForComments(comments);
+
+  return res.status(200).json({
+    comments: comments.map((comment) => normalizePublicComment(comment, userById)),
+  });
+});
+
 router.get('/public/comments', async (req, res) => {
   const { targetType, targetId, limit, page } = req.query || {};
   const normalizedTargetType = normalizeCommentTargetType(targetType);

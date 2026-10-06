@@ -67,6 +67,16 @@ const commentSchema = new Schema(
       default: null,
       min: 1,
     },
+    showInDonationPage: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    donationPageOrder: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
   },
   schemaOptions
 );
@@ -76,5 +86,6 @@ commentSchema.index({ parentCommentId: 1, createdAt: 1 });
 commentSchema.index({ username: 1 });
 commentSchema.index({ userId: 1, createdAt: -1 });
 commentSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
+commentSchema.index({ showInDonationPage: 1, donationPageOrder: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Comment', commentSchema);
