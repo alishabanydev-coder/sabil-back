@@ -191,6 +191,32 @@ function buildOlderAdminRootCommentCursorFilter(cursor) {
   };
 }
 
+async function fetchCommentDescendants(rootIds) {
+  const descendants = [];
+  const seen = new Set(rootIds.map((id) => id.toString()));
+  let parentIds = rootIds;
+
+  while (parentIds.length > 0) {
+    const children = await Comment.find({
+      parentCommentId: { $in: parentIds },
+    }).sort({ createdAt: 1, _id: 1 });
+
+    parentIds = [];
+    children.forEach((child) => {
+      const childId = child._id.toString();
+      if (seen.has(childId)) {
+        return;
+      }
+
+      seen.add(childId);
+      descendants.push(child);
+      parentIds.push(child._id);
+    });
+  }
+
+  return descendants;
+}
+
 async function fetchPaginatedAdminRootComments({
   targetType,
   targetId,
@@ -217,12 +243,7 @@ async function fetchPaginatedAdminRootComments({
   const pageRoots = hasMore ? rootComments.slice(0, limit) : rootComments;
   const rootIds = pageRoots.map((comment) => comment._id);
 
-  const replies =
-    rootIds.length > 0
-      ? await Comment.find({
-          parentCommentId: { $in: rootIds },
-        }).sort({ createdAt: 1, _id: 1 })
-      : [];
+  const replies = rootIds.length > 0 ? await fetchCommentDescendants(rootIds) : [];
 
   const nextCursor =
     hasMore && pageRoots.length > 0

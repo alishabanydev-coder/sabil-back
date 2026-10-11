@@ -228,6 +228,32 @@ function parseCommentPageNumber(value) {
   return parsed;
 }
 
+async function fetchCommentDescendants(rootIds) {
+  const descendants = [];
+  const seen = new Set(rootIds.map((id) => id.toString()));
+  let parentIds = rootIds;
+
+  while (parentIds.length > 0) {
+    const children = await Comment.find({
+      parentCommentId: { $in: parentIds },
+    }).sort({ createdAt: 1, _id: 1 });
+
+    parentIds = [];
+    children.forEach((child) => {
+      const childId = child._id.toString();
+      if (seen.has(childId)) {
+        return;
+      }
+
+      seen.add(childId);
+      descendants.push(child);
+      parentIds.push(child._id);
+    });
+  }
+
+  return descendants;
+}
+
 async function fetchPaginatedRootComments({
   targetType,
   targetId,
@@ -252,12 +278,7 @@ async function fetchPaginatedRootComments({
 
   const rootIds = rootComments.map((comment) => comment._id);
 
-  const replies =
-    rootIds.length > 0
-      ? await Comment.find({
-          parentCommentId: { $in: rootIds },
-        }).sort({ createdAt: 1, _id: 1 })
-      : [];
+  const replies = rootIds.length > 0 ? await fetchCommentDescendants(rootIds) : [];
 
   return {
     comments: [...rootComments, ...replies],
