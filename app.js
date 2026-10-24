@@ -20,7 +20,13 @@ app.use(
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(
+  '/uploads',
+  express.static(path.join(__dirname, 'uploads'), {
+    maxAge: '30d',
+    immutable: true,
+  }),
+);
 app.use('/api/auth', userAuthRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api', publicBannerRouter);
