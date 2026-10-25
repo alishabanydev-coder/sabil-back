@@ -28,14 +28,24 @@ function createDonationProjectAdminRoutes({
     'uploads',
     'donation-section-images'
   );
+  const donationStaffPhotoUploadDir = path.join(
+    __dirname,
+    '..',
+    '..',
+    'uploads',
+    'donation-staff-photos'
+  );
 
   const donationUpload = multer({
     storage: multer.diskStorage({
       destination(req, file, callback) {
-        const destinationDir =
-          file.fieldname === 'poster'
-            ? donationPosterUploadDir
-            : donationSectionImageUploadDir;
+        let destinationDir = donationSectionImageUploadDir;
+
+        if (file.fieldname === 'poster') {
+          destinationDir = donationPosterUploadDir;
+        } else if (file.fieldname === 'staffPhotos') {
+          destinationDir = donationStaffPhotoUploadDir;
+        }
 
         fs.mkdirSync(destinationDir, { recursive: true });
         callback(null, destinationDir);
@@ -66,6 +76,7 @@ function createDonationProjectAdminRoutes({
     donationUpload.fields([
       { name: 'poster', maxCount: 1 },
       { name: 'sectionImages', maxCount: 48 },
+      { name: 'staffPhotos', maxCount: 48 },
     ])(req, res, (error) => {
       if (!error) {
         return next();
@@ -318,7 +329,15 @@ function createDonationProjectAdminRoutes({
     return { ok: true, steps };
   }
 
-  function parseStaffField(rawStaff) {
+  function discardUnusedStaffPhotos(uploadedStaffPhotos, usedPhotoFileIndices = []) {
+    deleteUploadedFiles(
+      uploadedStaffPhotos.filter(
+        (_file, index) => !usedPhotoFileIndices.includes(index)
+      )
+    );
+  }
+
+  function parseStaffField(rawStaff, uploadedStaffPhotos = []) {
     const parsed = parseJsonField(rawStaff, 'staff');
     if (!parsed.ok) {
       return parsed;
@@ -328,6 +347,7 @@ function createDonationProjectAdminRoutes({
       return { ok: false, message: 'Staff must be an array.' };
     }
 
+    const usedPhotoFileIndices = [];
     const staff = parsed.value.map((item, index) => {
       const id = typeof item?.id === 'string' ? item.id.trim() : '';
       const name = typeof item?.name === 'string' ? item.name.trim() : '';
@@ -336,7 +356,7 @@ function createDonationProjectAdminRoutes({
         typeof item?.bio === 'string' && item.bio.trim()
           ? item.bio.trim()
           : null;
-      const photo = normalizeStoredAssetPath(item?.photo);
+      let photo = null;
 
       if (!id) {
         throw new Error(`Staff member ${index + 1} requires an id.`);
@@ -350,18 +370,45 @@ function createDonationProjectAdminRoutes({
         throw new Error(`Staff member ${index + 1} requires a role.`);
       }
 
+      if (Number.isInteger(item?.photoFileIndex)) {
+        const uploadedFile = uploadedStaffPhotos[item.photoFileIndex] || null;
+
+        if (!uploadedFile) {
+          throw new Error(
+            `Staff member ${index + 1} photo upload is missing.`
+          );
+        }
+
+        usedPhotoFileIndices.push(item.photoFileIndex);
+        photo = `/uploads/donation-staff-photos/${uploadedFile.filename}`;
+      } else if (
+        item?.photo !== undefined &&
+        item?.photo !== null &&
+        item?.photo !== ''
+      ) {
+        const normalized = normalizeStoredAssetPath(item.photo);
+
+        if (!normalized.startsWith('/uploads/')) {
+          throw new Error(
+            `Staff member ${index + 1} photo must be an uploaded image file.`
+          );
+        }
+
+        photo = normalized;
+      }
+
       return {
         id,
         name,
         role,
-        photo: photo || null,
+        photo,
         bio,
         order:
           typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
       };
     });
 
-    return { ok: true, staff };
+    return { ok: true, staff, usedPhotoFileIndices };
   }
 
   async function parseUpdateRefsField(rawUpdateRefs) {
@@ -681,9 +728,12 @@ function createDonationProjectAdminRoutes({
         req,
         'sectionImages'
       );
-      const uploadedFiles = [posterFile, ...uploadedSectionImages].filter(
-        Boolean
-      );
+      const uploadedStaffPhotos = getUploadedFilesByField(req, 'staffPhotos');
+      const uploadedFiles = [
+        posterFile,
+        ...uploadedSectionImages,
+        ...uploadedStaffPhotos,
+      ].filter(Boolean);
       const fields = parseDonationScalarFields(req.body);
       const scalarError = validateDonationScalars(fields, {
         requirePosterPath: posterFile,
@@ -725,7 +775,7 @@ function createDonationProjectAdminRoutes({
           return res.status(400).json({ message: parsedSteps.message });
         }
 
-        parsedStaff = parseStaffField(req.body?.staff);
+        parsedStaff = parseStaffField(req.body?.staff, uploadedStaffPhotos);
         if (!parsedStaff.ok) {
           deleteUploadedFiles(uploadedFiles);
           return res.status(400).json({ message: parsedStaff.message });
@@ -743,6 +793,11 @@ function createDonationProjectAdminRoutes({
           message: error.message,
         });
       }
+
+      discardUnusedStaffPhotos(
+        uploadedStaffPhotos,
+        parsedStaff.usedPhotoFileIndices
+      );
 
       try {
         const project = await DonationProject.create({
@@ -814,9 +869,12 @@ function createDonationProjectAdminRoutes({
         req,
         'sectionImages'
       );
-      const uploadedFiles = [posterFile, ...uploadedSectionImages].filter(
-        Boolean
-      );
+      const uploadedStaffPhotos = getUploadedFilesByField(req, 'staffPhotos');
+      const uploadedFiles = [
+        posterFile,
+        ...uploadedSectionImages,
+        ...uploadedStaffPhotos,
+      ].filter(Boolean);
       const fields = parseDonationScalarFields({
         ...project.toObject(),
         ...req.body,
@@ -872,7 +930,7 @@ function createDonationProjectAdminRoutes({
         }
 
         if (req.body?.staff !== undefined) {
-          parsedStaff = parseStaffField(req.body.staff);
+          parsedStaff = parseStaffField(req.body.staff, uploadedStaffPhotos);
           if (!parsedStaff.ok) {
             deleteUploadedFiles(uploadedFiles);
             return res.status(400).json({ message: parsedStaff.message });
@@ -893,6 +951,11 @@ function createDonationProjectAdminRoutes({
           message: error.message,
         });
       }
+
+      discardUnusedStaffPhotos(
+        uploadedStaffPhotos,
+        parsedStaff?.usedPhotoFileIndices
+      );
 
       try {
         project.title = fields.title;
