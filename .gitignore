@@ -9,3 +9,4 @@ pnpm-debug.log*
 dist/
 build/
 .DS_Store
+uploads/
