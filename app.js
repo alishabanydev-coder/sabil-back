@@ -4,6 +4,7 @@ const path = require('path');
 const adminRouter = require('./modules');
 const { userAuthRouter } = require('./modules/auth/auth.routes');
 const publicBannerRouter = require('./modules/banners/publicBanner.routes');
+const channelRouter = require('./modules/channels/channel.routes');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use(
 app.use('/api/auth', userAuthRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api', publicBannerRouter);
+app.get('/api/channels/youtube/oauth/callback', channelRouter.handleYouTubeOAuthCallback);
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({

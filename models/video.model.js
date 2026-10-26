@@ -58,6 +58,40 @@ const videoSchema = new Schema(
       default: true,
       index: true,
     },
+    tags: {
+      type: [String],
+      default: [],
+      index: true,
+    },
+    viewCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      index: true,
+    },
+    likeCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      index: true,
+    },
+    commentCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    youtubeVideoId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    youtubeChannelId: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
   },
   schemaOptions
 );
