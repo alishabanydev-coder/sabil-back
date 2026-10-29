@@ -18,4 +18,4 @@ jobs:
           echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
 
       - name: Show running apps
-       run: ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "pm2 list"
+        run: ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "pm2 list"
