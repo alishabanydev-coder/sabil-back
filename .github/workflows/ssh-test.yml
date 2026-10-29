@@ -1,0 +1,21 @@
+name: SSH test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load the deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Trust this server
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: Show running apps
+        run: ssh -o IdentitiesOnly=yes ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "pm2 list"
