@@ -40,6 +40,35 @@ const {
   extractYouTubeVideoId,
   fetchYouTubeVideoDetailsByUrlOrId,
 } = require('../../lib/youtube');
+const {
+  buildYouTubePosterFilename,
+  convertUploadedPosterFile,
+  resolveDeletableVideoThumbnail,
+  resolveStoredVideoPoster,
+  saveYouTubePosterAsWebp,
+} = require('../../lib/posterImage');
+
+async function removePosterIfUnused(posterPath, keepPath = '') {
+  const resolved = resolveDeletableVideoThumbnail(posterPath);
+  const resolvedKeepPath = resolveDeletableVideoThumbnail(keepPath);
+  if (!resolved || resolved === resolvedKeepPath) {
+    return;
+  }
+
+  const inUse = await Video.exists({ thumbnail: resolved });
+  if (!inUse) {
+    deleteStoredUpload(resolved);
+  }
+}
+
+async function storeIncomingVideoPoster(req) {
+  if (req.file) {
+    await convertUploadedPosterFile(req.file);
+    return `/uploads/video-thumbnails/${req.file.filename}`;
+  }
+
+  return resolveStoredVideoPoster(req.body?.thumbnail);
+}
 
 function parseTagsInput(rawTags) {
   if (Array.isArray(rawTags)) {
@@ -424,8 +453,31 @@ router.post(
 
     try {
       const details = await fetchYouTubeVideoDetailsByUrlOrId(targetUrl.trim());
+      let posterError = '';
+
+      try {
+        const storedPoster = await saveYouTubePosterAsWebp(
+          details.thumbnailUrls,
+          buildYouTubePosterFilename(details.youtubeVideoId)
+        );
+        details.thumbnail = storedPoster;
+      } catch (error) {
+        posterError = error.message || 'Failed to save the YouTube poster.';
+      }
+
+      const previousPoster =
+        typeof req.body?.previousPoster === 'string' ? req.body.previousPoster : '';
+      if (details.thumbnail && path.basename(previousPoster).startsWith('yt-')) {
+        await removePosterIfUnused(previousPoster, details.thumbnail);
+      }
+
+      delete details.thumbnailUrls;
+
       return res.status(200).json({
-        videoDetails: details,
+        videoDetails: {
+          ...details,
+          posterError,
+        },
       });
     } catch (error) {
       return res.status(400).json({
@@ -461,6 +513,8 @@ router.post(
 
     let syncedCount = 0;
     let failedCount = 0;
+    let posterSavedCount = 0;
+    let posterFailedCount = 0;
     const errors = [];
 
     for (const video of videos) {
@@ -470,6 +524,9 @@ router.post(
         errors.push(`"${video.title}": URL is not a recognizable YouTube link.`);
         continue;
       }
+
+      const previousThumbnail = video.thumbnail;
+      let storedPoster = '';
 
       try {
         const details = await fetchYouTubeVideoDetailsByUrlOrId(videoId);
@@ -491,9 +548,36 @@ router.post(
           video.youtubeChannelId = details.youtubeChannelId;
         }
 
+        let posterWasSaved = false;
+        if (Array.isArray(details.thumbnailUrls) && details.thumbnailUrls.length > 0) {
+          try {
+            storedPoster = await saveYouTubePosterAsWebp(
+              details.thumbnailUrls,
+              buildYouTubePosterFilename(videoId)
+            );
+            video.thumbnail = storedPoster;
+            posterWasSaved = true;
+          } catch (posterError) {
+            posterFailedCount += 1;
+            errors.push(
+              `"${video.title}" poster: ${posterError.message || 'Failed to save the poster.'}`
+            );
+          }
+        }
+
         await video.save();
         syncedCount += 1;
+        if (posterWasSaved) {
+          posterSavedCount += 1;
+        }
+
+        if (storedPoster && previousThumbnail !== storedPoster) {
+          await removePosterIfUnused(previousThumbnail, storedPoster);
+        }
       } catch (error) {
+        if (storedPoster) {
+          await removePosterIfUnused(storedPoster);
+        }
         failedCount += 1;
         errors.push(`"${video.title}": ${error.message}`);
       }
@@ -505,15 +589,26 @@ router.post(
       createdAt: -1,
     });
 
+    const messageParts = [
+      failedCount === 0
+        ? `Synced ${syncedCount} video(s) from YouTube.`
+        : `Synced ${syncedCount} video(s), ${failedCount} skipped.`,
+    ];
+    if (posterSavedCount > 0) {
+      messageParts.push(`Saved ${posterSavedCount} poster(s) as WebP.`);
+    }
+    if (posterFailedCount > 0) {
+      messageParts.push(`${posterFailedCount} poster(s) could not be saved.`);
+    }
+
     return res.status(200).json({
       syncedCount,
       failedCount,
+      posterSavedCount,
+      posterFailedCount,
       errors,
       videos: updatedVideos.map((v) => normalizeAdminChannelVideo(v)),
-      message:
-        failedCount === 0
-          ? `Synced ${syncedCount} video(s) from YouTube.`
-          : `Synced ${syncedCount} video(s), ${failedCount} skipped/failed.`,
+      message: messageParts.join(' '),
     });
   }
 );
@@ -608,12 +703,23 @@ router.post(
     const videoUrlValue = typeof url === 'string' ? url : videoUrl;
     const parsedSeason = Number(season);
     const parsedEpisode = Number(episode);
+    let storedThumbnail = '';
+
+    try {
+      storedThumbnail = await storeIncomingVideoPoster(req);
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: error.message || 'Failed to save the poster.',
+      });
+    }
 
     if (
       typeof title !== 'string' ||
       typeof description !== 'string' ||
       typeof videoUrlValue !== 'string' ||
-      !req.file ||
+      !storedThumbnail ||
       !title.trim() ||
       !description.trim() ||
       !videoUrlValue.trim() ||
@@ -668,7 +774,7 @@ router.post(
         title,
         description,
         url: videoUrlValue,
-        thumbnail: `/uploads/video-thumbnails/${req.file.filename}`,
+        thumbnail: storedThumbnail,
         projectId,
         season: parsedSeason,
         episode: parsedEpisode,
@@ -818,11 +924,21 @@ router.patch(
       });
     }
 
-    const nextThumbnail = req.file
-      ? `/uploads/video-thumbnails/${req.file.filename}`
-      : typeof thumbnail === 'string' && thumbnail.startsWith('/uploads/')
-        ? thumbnail
-        : video.thumbnail;
+    let uploadedThumbnail = '';
+    try {
+      uploadedThumbnail = req.file ? await storeIncomingVideoPoster(req) : '';
+    } catch (error) {
+      deleteUploadedFile(req.file);
+
+      return res.status(400).json({
+        message: error.message || 'Failed to save the poster.',
+      });
+    }
+
+    const providedThumbnail = uploadedThumbnail
+      ? ''
+      : resolveStoredVideoPoster(thumbnail);
+    const nextThumbnail = uploadedThumbnail || providedThumbnail || video.thumbnail;
 
     try {
       const previousThumbnail = video.thumbnail;
@@ -868,8 +984,8 @@ router.patch(
       }
 
       await video.save();
-      if (req.file && previousThumbnail !== nextThumbnail) {
-        deleteStoredUpload(previousThumbnail);
+      if (previousThumbnail !== nextThumbnail) {
+        await removePosterIfUnused(previousThumbnail, nextThumbnail);
       }
 
       return res.status(200).json({
@@ -995,7 +1111,7 @@ router.delete(
       });
     }
 
-    deleteStoredUpload(video.thumbnail);
+    await removePosterIfUnused(video.thumbnail);
 
     return res.status(200).json({
       message: 'Video deleted.',
