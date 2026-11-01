@@ -543,6 +543,7 @@ router.post(
         video.viewCount = details.viewCount;
         video.likeCount = details.likeCount;
         video.commentCount = details.commentCount;
+        video.duration = Math.max(0, Math.round(Number(details.duration) || 0));
         video.youtubeVideoId = details.youtubeVideoId || videoId;
         if (details.youtubeChannelId) {
           video.youtubeChannelId = details.youtubeChannelId;
@@ -766,6 +767,7 @@ router.post(
         viewCount,
         likeCount,
         commentCount,
+        duration,
         youtubeVideoId,
         youtubeChannelId,
       } = req.body || {};
@@ -783,6 +785,7 @@ router.post(
         viewCount: Math.max(0, Number(viewCount) || 0),
         likeCount: Math.max(0, Number(likeCount) || 0),
         commentCount: Math.max(0, Number(commentCount) || 0),
+        duration: Math.max(0, Math.round(Number(duration) || 0)),
         youtubeVideoId:
           typeof youtubeVideoId === 'string' && youtubeVideoId.trim()
             ? youtubeVideoId.trim()
@@ -947,6 +950,7 @@ router.patch(
         viewCount,
         likeCount,
         commentCount,
+        duration,
         youtubeVideoId,
         youtubeChannelId,
       } = req.body || {};
@@ -970,6 +974,9 @@ router.patch(
       }
       if (commentCount !== undefined && commentCount !== '') {
         video.commentCount = Math.max(0, Number(commentCount) || 0);
+      }
+      if (duration !== undefined && duration !== '') {
+        video.duration = Math.max(0, Math.round(Number(duration) || 0));
       }
       if (typeof youtubeVideoId === 'string' && youtubeVideoId.trim()) {
         video.youtubeVideoId = youtubeVideoId.trim();

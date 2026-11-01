@@ -80,6 +80,11 @@ const videoSchema = new Schema(
       default: 0,
       min: 0,
     },
+    duration: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     youtubeVideoId: {
       type: String,
       default: '',
