@@ -8,6 +8,27 @@ const channelRouter = require('./modules/channels/channel.routes');
 
 const app = express();
 
+const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+if (trustProxy !== undefined) {
+  app.set('trust proxy', trustProxy);
+}
+
+function parseTrustProxy(value) {
+  if (value === undefined || value === '') {
+    return undefined;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  if (value === 'false') {
+    return false;
+  }
+
+  return value;
+}
+
 const corsOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)
   : true;

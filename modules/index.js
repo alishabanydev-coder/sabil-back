@@ -31,6 +31,7 @@ router.use(require('./aboutUs/aboutUs.routes'));
 router.use(require('./supporters/supporter.routes'));
 router.use(require('./banners/banner.routes'));
 router.use(require('./socialMedia/socialMedia.routes'));
+router.use(require('./reactions/reaction.routes'));
 
 createDonationProjectAdminRoutes({
   router,

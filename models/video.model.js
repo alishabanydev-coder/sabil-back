@@ -80,6 +80,17 @@ const videoSchema = new Schema(
       default: 0,
       min: 0,
     },
+    localLikeCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+      index: true,
+    },
+    saveCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     duration: {
       type: Number,
       default: 0,
