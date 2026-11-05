@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const { Schema } = mongoose;
 
@@ -31,7 +31,7 @@ const videoSchema = new Schema(
     },
     projectId: {
       type: Schema.Types.ObjectId,
-      ref: 'Project',
+      ref: "Project",
       required: true,
       index: true,
     },
@@ -69,6 +69,11 @@ const videoSchema = new Schema(
       min: 0,
       index: true,
     },
+    appViewCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     likeCount: {
       type: Number,
       default: 0,
@@ -98,13 +103,13 @@ const videoSchema = new Schema(
     },
     youtubeVideoId: {
       type: String,
-      default: '',
+      default: "",
       trim: true,
       index: true,
     },
     youtubeChannelId: {
       type: String,
-      default: '',
+      default: "",
       trim: true,
       index: true,
     },
@@ -116,4 +121,4 @@ videoSchema.index({ projectId: 1, season: 1, episode: 1 }, { unique: true });
 videoSchema.index({ title: 1 });
 videoSchema.index({ showInHomepage: 1, homepageOrder: 1, createdAt: -1 });
 
-module.exports = mongoose.model('Video', videoSchema);
+module.exports = mongoose.model("Video", videoSchema);
