@@ -42,18 +42,10 @@ jobs:
         run: |
           ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd /var/www/backend/sabil-back && npm ci --omit=dev && pm2 reload backend"
 
-      - name: Record deploy and notify
+      - name: Record deploy
         if: always()
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           STATUS="${{ job.status }}"
           ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cat > /root/deploy-status.json" <<EOF
           {"finishedAt":"$(date -Iseconds)","ok":$([ "$STATUS" = "success" ] && echo true || echo false),"target":"backend"}
           EOF
-          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=🚀 [CI/CD DEPLOY]
-          Target: backend
-          Result: ${STATUS}"
