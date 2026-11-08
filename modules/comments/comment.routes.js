@@ -1,30 +1,30 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const { ADMIN_ROLES } = require('../../adminPermissions');
-const Project = require('../../models/project.model');
-const Video = require('../../models/video.model');
-const Blog = require('../../models/blog.model');
-const Comment = require('../../models/comment.model');
-const ProjectBreakDown = require('../../models/projectBreakDown.model');
-const DonationProject = require('../../models/donationProject.model');
+const express = require("express");
+const mongoose = require("mongoose");
+const { ADMIN_ROLES } = require("../../adminPermissions");
+const Project = require("../../models/project.model");
+const Video = require("../../models/video.model");
+const Blog = require("../../models/blog.model");
+const Comment = require("../../models/comment.model");
+const ProjectBreakDown = require("../../models/projectBreakDown.model");
+const DonationProject = require("../../models/donationProject.model");
 const {
   authenticateAdmin,
   getAllowedChannelProjectIds,
   hasPermission,
   requireCommentAccess,
-} = require('../../middleware/adminAuth');
+} = require("../../middleware/adminAuth");
 const {
   parseOptionalBoolean,
   parseOptionalHomepageOrder,
-} = require('../../lib/parse');
+} = require("../../lib/parse");
 
 const COMMENT_TARGET_TYPES = [
-  'video',
-  'blog',
-  'breakdown',
-  'general',
-  'project',
-  'projectDonation',
+  "video",
+  "blog",
+  "breakdown",
+  "general",
+  "project",
+  "projectDonation",
 ];
 
 const COMMENT_TARGET_MODELS = {
@@ -36,21 +36,21 @@ const COMMENT_TARGET_MODELS = {
 };
 
 function normalizeCommentTargetType(value) {
-  if (typeof value !== 'string') {
-    return '';
+  if (typeof value !== "string") {
+    return "";
   }
 
   const normalized = value.trim().toLowerCase();
   const aliases = {
-    video: 'video',
-    blog: 'blog',
-    breakdown: 'breakdown',
-    general: 'general',
-    project: 'project',
-    projectdonation: 'projectDonation',
+    video: "video",
+    blog: "blog",
+    breakdown: "breakdown",
+    general: "general",
+    project: "project",
+    projectdonation: "projectDonation",
   };
 
-  return aliases[normalized] || '';
+  return aliases[normalized] || "";
 }
 
 function isValidCommentTargetType(targetType) {
@@ -58,7 +58,11 @@ function isValidCommentTargetType(targetType) {
 }
 
 function commentTargetRequiresId(targetType) {
-  return targetType !== 'general';
+  return targetType !== "general";
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeCommentTargetId(targetType, targetId) {
@@ -66,7 +70,7 @@ function normalizeCommentTargetId(targetType, targetId) {
     return null;
   }
 
-  if (targetId === undefined || targetId === null || targetId === '') {
+  if (targetId === undefined || targetId === null || targetId === "") {
     return null;
   }
 
@@ -79,7 +83,12 @@ function commentTargetIdsMatch(firstTargetId, secondTargetId) {
   return first === second;
 }
 
-function commentTargetsMatch(firstTargetType, firstTargetId, secondTargetType, secondTargetId) {
+function commentTargetsMatch(
+  firstTargetType,
+  firstTargetId,
+  secondTargetType,
+  secondTargetId
+) {
   return (
     firstTargetType === secondTargetType &&
     commentTargetIdsMatch(firstTargetId, secondTargetId)
@@ -96,9 +105,7 @@ function normalizeAdminCommentRecord(comment) {
   return {
     ...plain,
     _id:
-      typeof plain._id === 'string'
-        ? plain._id
-        : plain._id?.toString?.() || '',
+      typeof plain._id === "string" ? plain._id : plain._id?.toString?.() || "",
     targetId: plain.targetId ? plain.targetId.toString() : null,
     parentCommentId: plain.parentCommentId
       ? plain.parentCommentId.toString()
@@ -122,7 +129,9 @@ function buildAdminCommentThread(comments) {
     repliesByParent.set(comment.parentCommentId, siblings);
   });
 
-  const roots = normalizedComments.filter((comment) => !comment.parentCommentId);
+  const roots = normalizedComments.filter(
+    (comment) => !comment.parentCommentId
+  );
   const sortNewestFirst = (a, b) =>
     new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
   const sortOldestFirst = (a, b) =>
@@ -141,7 +150,7 @@ const ADMIN_COMMENT_THREAD_PAGE_SIZE = 10;
 const ADMIN_COMMENT_THREAD_MAX_PAGE_SIZE = 50;
 
 function parseAdminCommentPageLimit(value) {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
+  const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return ADMIN_COMMENT_THREAD_PAGE_SIZE;
   }
@@ -158,11 +167,11 @@ function encodeAdminCommentCursor(comment) {
 }
 
 function parseAdminCommentCursor(value) {
-  if (typeof value !== 'string' || !value.trim()) {
+  if (typeof value !== "string" || !value.trim()) {
     return null;
   }
 
-  const separatorIndex = value.lastIndexOf(':');
+  const separatorIndex = value.lastIndexOf(":");
   if (separatorIndex <= 0) {
     return null;
   }
@@ -171,7 +180,10 @@ function parseAdminCommentCursor(value) {
   const id = value.slice(separatorIndex + 1);
   const createdAt = new Date(createdAtValue);
 
-  if (Number.isNaN(createdAt.getTime()) || !mongoose.Types.ObjectId.isValid(id)) {
+  if (
+    Number.isNaN(createdAt.getTime()) ||
+    !mongoose.Types.ObjectId.isValid(id)
+  ) {
     return null;
   }
 
@@ -225,7 +237,7 @@ async function fetchPaginatedAdminRootComments({
 }) {
   const parsedCursor = parseAdminCommentCursor(cursor);
   if (cursor && !parsedCursor) {
-    return { error: 'Invalid comments cursor.' };
+    return { error: "Invalid comments cursor." };
   }
 
   const rootFilter = {
@@ -243,7 +255,8 @@ async function fetchPaginatedAdminRootComments({
   const pageRoots = hasMore ? rootComments.slice(0, limit) : rootComments;
   const rootIds = pageRoots.map((comment) => comment._id);
 
-  const replies = rootIds.length > 0 ? await fetchCommentDescendants(rootIds) : [];
+  const replies =
+    rootIds.length > 0 ? await fetchCommentDescendants(rootIds) : [];
 
   const nextCursor =
     hasMore && pageRoots.length > 0
@@ -258,7 +271,7 @@ async function fetchPaginatedAdminRootComments({
 }
 
 async function commentTargetExists(targetType, targetId) {
-  if (targetType === 'general') {
+  if (targetType === "general") {
     return targetId === null || targetId === undefined;
   }
 
@@ -271,7 +284,7 @@ async function commentTargetExists(targetType, targetId) {
     return false;
   }
 
-  const target = await model.findById(targetId).select('_id');
+  const target = await model.findById(targetId).select("_id");
   return Boolean(target);
 }
 
@@ -280,12 +293,12 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
     return true;
   }
 
-  if (targetType === 'general' || targetType === 'blog') {
+  if (targetType === "general" || targetType === "blog") {
     return false;
   }
 
-  if (targetType === 'projectDonation') {
-    return hasPermission(admin, 'donation', 'read');
+  if (targetType === "projectDonation") {
+    return hasPermission(admin, "donation", "read");
   }
 
   const allowedProjectIds = getAllowedChannelProjectIds(admin);
@@ -293,19 +306,23 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
     return false;
   }
 
-  if (targetType === 'project') {
+  if (targetType === "project") {
     return Boolean(targetId && allowedProjectIds.includes(targetId.toString()));
   }
 
-  if (targetType === 'video') {
-    const video = await Video.findById(targetId).select('projectId');
-    return Boolean(video?.projectId && allowedProjectIds.includes(video.projectId.toString()));
+  if (targetType === "video") {
+    const video = await Video.findById(targetId).select("projectId");
+    return Boolean(
+      video?.projectId && allowedProjectIds.includes(video.projectId.toString())
+    );
   }
 
-  if (targetType === 'breakdown') {
-    const breakdown = await ProjectBreakDown.findById(targetId).select('projectId');
+  if (targetType === "breakdown") {
+    const breakdown =
+      await ProjectBreakDown.findById(targetId).select("projectId");
     return Boolean(
-      breakdown?.projectId && allowedProjectIds.includes(breakdown.projectId.toString())
+      breakdown?.projectId &&
+      allowedProjectIds.includes(breakdown.projectId.toString())
     );
   }
 
@@ -317,8 +334,8 @@ async function canAdminAccessCommentTarget(admin, targetType, targetId) {
 function requireDonationPageCommentAccess(action) {
   return (req, res, next) => {
     if (
-      hasPermission(req.admin, 'donation', action) ||
-      hasPermission(req.admin, 'comments', action)
+      hasPermission(req.admin, "donation", action) ||
+      hasPermission(req.admin, "comments", action)
     ) {
       return next();
     }
@@ -346,9 +363,9 @@ async function getDonationPageCommentItems() {
 const router = express.Router();
 
 router.get(
-  '/comments/donation-page',
+  "/comments/donation-page",
   authenticateAdmin,
-  requireDonationPageCommentAccess('read'),
+  requireDonationPageCommentAccess("read"),
   async (_req, res) => {
     const items = await getDonationPageCommentItems();
 
@@ -359,30 +376,30 @@ router.get(
 );
 
 router.put(
-  '/comments/donation-page',
+  "/comments/donation-page",
   authenticateAdmin,
-  requireDonationPageCommentAccess('update'),
+  requireDonationPageCommentAccess("update"),
   async (req, res) => {
     const orderedIds = req.body?.orderedIds;
 
     if (!Array.isArray(orderedIds)) {
       return res.status(400).json({
-        message: 'orderedIds must be an array of comment ids.',
+        message: "orderedIds must be an array of comment ids.",
       });
     }
 
     const hasInvalidId = orderedIds.some(
-      (id) => typeof id !== 'string' || !mongoose.Types.ObjectId.isValid(id)
+      (id) => typeof id !== "string" || !mongoose.Types.ObjectId.isValid(id)
     );
     if (hasInvalidId) {
       return res.status(400).json({
-        message: 'orderedIds must contain valid comment ids.',
+        message: "orderedIds must contain valid comment ids.",
       });
     }
 
     if (new Set(orderedIds).size !== orderedIds.length) {
       return res.status(400).json({
-        message: 'orderedIds must not contain duplicates.',
+        message: "orderedIds must not contain duplicates.",
       });
     }
 
@@ -395,7 +412,7 @@ router.put(
 
         if (rootCommentsCount !== orderedIds.length) {
           return res.status(404).json({
-            message: 'One or more comments were not found or are replies.',
+            message: "One or more comments were not found or are replies.",
           });
         }
       }
@@ -443,36 +460,40 @@ router.put(
 );
 
 router.patch(
-  '/comments/:id/donation-page',
+  "/comments/:id/donation-page",
   authenticateAdmin,
-  requireDonationPageCommentAccess('update'),
+  requireDonationPageCommentAccess("update"),
   async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
-        message: 'Invalid comment id.',
+        message: "Invalid comment id.",
       });
     }
 
     const body = req.body || {};
     const updates = {};
 
-    if (Object.prototype.hasOwnProperty.call(body, 'showInDonationPage')) {
-      const parsedShowInDonationPage = parseOptionalBoolean(body.showInDonationPage);
+    if (Object.prototype.hasOwnProperty.call(body, "showInDonationPage")) {
+      const parsedShowInDonationPage = parseOptionalBoolean(
+        body.showInDonationPage
+      );
       if (parsedShowInDonationPage === undefined) {
         return res.status(400).json({
-          message: 'showInDonationPage must be a boolean.',
+          message: "showInDonationPage must be a boolean.",
         });
       }
       updates.showInDonationPage = parsedShowInDonationPage;
     }
 
-    if (Object.prototype.hasOwnProperty.call(body, 'donationPageOrder')) {
-      const parsedDonationPageOrder = parseOptionalHomepageOrder(body.donationPageOrder);
+    if (Object.prototype.hasOwnProperty.call(body, "donationPageOrder")) {
+      const parsedDonationPageOrder = parseOptionalHomepageOrder(
+        body.donationPageOrder
+      );
       if (parsedDonationPageOrder === undefined) {
         return res.status(400).json({
-          message: 'donationPageOrder must be a positive integer or null.',
+          message: "donationPageOrder must be a positive integer or null.",
         });
       }
       updates.donationPageOrder = parsedDonationPageOrder;
@@ -480,7 +501,7 @@ router.patch(
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
-        message: 'Nothing to update.',
+        message: "Nothing to update.",
       });
     }
 
@@ -492,7 +513,7 @@ router.patch(
       const comment = await Comment.findById(id);
       if (!comment) {
         return res.status(404).json({
-          message: 'Comment not found.',
+          message: "Comment not found.",
         });
       }
 
@@ -500,7 +521,7 @@ router.patch(
       const isSettingOrder = Number.isInteger(updates.donationPageOrder);
       if (comment.parentCommentId && (isEnabling || isSettingOrder)) {
         return res.status(400).json({
-          message: 'Replies cannot be featured on the donation page.',
+          message: "Replies cannot be featured on the donation page.",
         });
       }
 
@@ -519,31 +540,42 @@ router.patch(
 );
 
 router.post(
-  '/comments',
+  "/comments",
   authenticateAdmin,
-  requireCommentAccess('create'),
+  requireCommentAccess("create"),
   async (req, res) => {
-    const { text, username, targetType, targetId, parentCommentId } = req.body || {};
-    const normalizedText = typeof text === 'string' ? text.trim() : '';
-    const normalizedUsername = typeof username === 'string' ? username.trim() : '';
+    const { text, username, targetType, targetId, parentCommentId } =
+      req.body || {};
+    const normalizedText = typeof text === "string" ? text.trim() : "";
+    const normalizedUsername =
+      typeof username === "string" ? username.trim() : "";
     const normalizedTargetType = normalizeCommentTargetType(targetType);
-    const normalizedTargetId = normalizeCommentTargetId(normalizedTargetType, targetId);
+    const normalizedTargetId = normalizeCommentTargetId(
+      normalizedTargetType,
+      targetId
+    );
 
-    if (!normalizedText || !normalizedUsername || !isValidCommentTargetType(normalizedTargetType)) {
+    if (
+      !normalizedText ||
+      !normalizedUsername ||
+      !isValidCommentTargetType(normalizedTargetType)
+    ) {
       return res.status(400).json({
-        message: 'Text, username, and a valid target type are required.',
+        message: "Text, username, and a valid target type are required.",
       });
     }
 
     if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
       return res.status(400).json({
-        message: 'Target id is required for this target type.',
+        message: "Target id is required for this target type.",
       });
     }
 
-    if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
+    if (
+      !(await commentTargetExists(normalizedTargetType, normalizedTargetId))
+    ) {
       return res.status(404).json({
-        message: 'Comment target not found.',
+        message: "Comment target not found.",
       });
     }
 
@@ -555,22 +587,26 @@ router.post(
       ))
     ) {
       return res.status(403).json({
-        message: 'You do not have access to this comment target project.',
+        message: "You do not have access to this comment target project.",
       });
     }
 
     let normalizedParentCommentId = null;
-    if (parentCommentId !== undefined && parentCommentId !== null && parentCommentId !== '') {
+    if (
+      parentCommentId !== undefined &&
+      parentCommentId !== null &&
+      parentCommentId !== ""
+    ) {
       if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
         return res.status(400).json({
-          message: 'Invalid parent comment id.',
+          message: "Invalid parent comment id.",
         });
       }
 
       const parentComment = await Comment.findById(parentCommentId);
       if (!parentComment) {
         return res.status(404).json({
-          message: 'Parent comment not found.',
+          message: "Parent comment not found.",
         });
       }
 
@@ -583,7 +619,7 @@ router.post(
         )
       ) {
         return res.status(400).json({
-          message: 'Parent comment target does not match this comment target.',
+          message: "Parent comment target does not match this comment target.",
         });
       }
 
@@ -611,34 +647,34 @@ router.post(
 );
 
 router.get(
-  '/comments',
+  "/comments",
   authenticateAdmin,
-  requireCommentAccess('read'),
+  requireCommentAccess("read"),
   async (req, res) => {
     const { targetType, username } = req.query || {};
     const filter = {};
 
-    if (typeof targetType === 'string' && targetType.trim()) {
+    if (typeof targetType === "string" && targetType.trim()) {
       const normalizedTargetType = normalizeCommentTargetType(targetType);
       if (!isValidCommentTargetType(normalizedTargetType)) {
         return res.status(400).json({
-          message: 'Invalid target type filter.',
+          message: "Invalid target type filter.",
         });
       }
 
       filter.targetType = normalizedTargetType;
     }
 
-    if (typeof username === 'string' && username.trim()) {
+    if (typeof username === "string" && username.trim()) {
       filter.username = {
-        $regex: username.trim(),
-        $options: 'i',
+        $regex: escapeRegex(username.trim().slice(0, 80)),
+        $options: "i",
       };
     }
 
     if (req.admin?.role !== ADMIN_ROLES.SUPER_ADMIN) {
       const allowedProjectIds = getAllowedChannelProjectIds(req.admin);
-      const hasDonationRead = hasPermission(req.admin, 'donation', 'read');
+      const hasDonationRead = hasPermission(req.admin, "donation", "read");
       const hasChannelScope =
         Array.isArray(allowedProjectIds) && allowedProjectIds.length > 0;
 
@@ -649,15 +685,15 @@ router.get(
       }
 
       if (!hasChannelScope && hasDonationRead) {
-        if (filter.targetType === 'blog' || filter.targetType === 'general') {
+        if (filter.targetType === "blog" || filter.targetType === "general") {
           return res.status(200).json({
             comments: [],
           });
         }
 
         if (!filter.targetType) {
-          filter.targetType = 'projectDonation';
-        } else if (filter.targetType !== 'projectDonation') {
+          filter.targetType = "projectDonation";
+        } else if (filter.targetType !== "projectDonation") {
           return res.status(200).json({
             comments: [],
           });
@@ -666,47 +702,54 @@ router.get(
 
       if (hasChannelScope) {
         const [videos, breakdowns] = await Promise.all([
-          Video.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
-          ProjectBreakDown.find({ projectId: { $in: allowedProjectIds } }).select('_id'),
+          Video.find({ projectId: { $in: allowedProjectIds } }).select("_id"),
+          ProjectBreakDown.find({
+            projectId: { $in: allowedProjectIds },
+          }).select("_id"),
         ]);
 
         const allowedVideoIds = videos.map((item) => item._id.toString());
-        const allowedBreakdownIds = breakdowns.map((item) => item._id.toString());
+        const allowedBreakdownIds = breakdowns.map((item) =>
+          item._id.toString()
+        );
 
-        if (filter.targetType === 'video') {
+        if (filter.targetType === "video") {
           filter.targetId = { $in: allowedVideoIds };
-        } else if (filter.targetType === 'breakdown') {
+        } else if (filter.targetType === "breakdown") {
           filter.targetId = { $in: allowedBreakdownIds };
-        } else if (filter.targetType === 'project') {
+        } else if (filter.targetType === "project") {
           filter.targetId = { $in: allowedProjectIds };
-        } else if (filter.targetType === 'projectDonation') {
+        } else if (filter.targetType === "projectDonation") {
           if (!hasDonationRead) {
             return res.status(200).json({
               comments: [],
             });
           }
-        } else if (filter.targetType === 'blog' || filter.targetType === 'general') {
+        } else if (
+          filter.targetType === "blog" ||
+          filter.targetType === "general"
+        ) {
           return res.status(200).json({
             comments: [],
           });
         } else {
           const orConditions = [
             {
-              targetType: 'video',
+              targetType: "video",
               targetId: { $in: allowedVideoIds },
             },
             {
-              targetType: 'breakdown',
+              targetType: "breakdown",
               targetId: { $in: allowedBreakdownIds },
             },
             {
-              targetType: 'project',
+              targetType: "project",
               targetId: { $in: allowedProjectIds },
             },
           ];
 
           if (hasDonationRead) {
-            orConditions.push({ targetType: 'projectDonation' });
+            orConditions.push({ targetType: "projectDonation" });
           }
 
           filter.$or = orConditions;
@@ -723,9 +766,9 @@ router.get(
 );
 
 router.get(
-  '/comments/thread',
+  "/comments/thread",
   authenticateAdmin,
-  requireCommentAccess('read'),
+  requireCommentAccess("read"),
   async (req, res) => {
     const { targetType, targetId, limit, cursor } = req.query || {};
     const normalizedTargetType = normalizeCommentTargetType(targetType);
@@ -737,19 +780,21 @@ router.get(
 
     if (!isValidCommentTargetType(normalizedTargetType)) {
       return res.status(400).json({
-        message: 'A valid target type is required.',
+        message: "A valid target type is required.",
       });
     }
 
     if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
       return res.status(400).json({
-        message: 'Target id is required for this target type.',
+        message: "Target id is required for this target type.",
       });
     }
 
-    if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
+    if (
+      !(await commentTargetExists(normalizedTargetType, normalizedTargetId))
+    ) {
       return res.status(404).json({
-        message: 'Comment target not found.',
+        message: "Comment target not found.",
       });
     }
 
@@ -761,7 +806,7 @@ router.get(
       ))
     ) {
       return res.status(403).json({
-        message: 'You do not have access to this comment target.',
+        message: "You do not have access to this comment target.",
       });
     }
 
@@ -789,23 +834,24 @@ router.get(
 );
 
 router.put(
-  '/comments/:id',
+  "/comments/:id",
   authenticateAdmin,
-  requireCommentAccess('update'),
+  requireCommentAccess("update"),
   async (req, res) => {
     const { id } = req.params;
-    const { text, username, targetType, targetId, parentCommentId } = req.body || {};
+    const { text, username, targetType, targetId, parentCommentId } =
+      req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
-        message: 'Invalid comment id.',
+        message: "Invalid comment id.",
       });
     }
 
     const comment = await Comment.findById(id);
     if (!comment) {
       return res.status(404).json({
-        message: 'Comment not found.',
+        message: "Comment not found.",
       });
     }
 
@@ -817,15 +863,21 @@ router.put(
       ))
     ) {
       return res.status(403).json({
-        message: 'You do not have access to this comment target project.',
+        message: "You do not have access to this comment target project.",
       });
     }
 
-    const hasText = typeof text === 'string';
-    const hasUsername = typeof username === 'string';
-    const hasTargetType = typeof targetType === 'string';
-    const hasTargetId = Object.prototype.hasOwnProperty.call(req.body || {}, 'targetId');
-    const hasParentCommentId = Object.prototype.hasOwnProperty.call(req.body || {}, 'parentCommentId');
+    const hasText = typeof text === "string";
+    const hasUsername = typeof username === "string";
+    const hasTargetType = typeof targetType === "string";
+    const hasTargetId = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "targetId"
+    );
+    const hasParentCommentId = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "parentCommentId"
+    );
 
     const nextText = hasText ? text.trim() : comment.text;
     const nextUsername = hasUsername ? username.trim() : comment.username;
@@ -838,58 +890,66 @@ router.put(
 
     if (!nextText || !nextUsername) {
       return res.status(400).json({
-        message: 'Text and username cannot be empty.',
+        message: "Text and username cannot be empty.",
       });
     }
 
     if (!isValidCommentTargetType(nextTargetType)) {
       return res.status(400).json({
-        message: 'Invalid target type.',
+        message: "Invalid target type.",
       });
     }
 
     if (commentTargetRequiresId(nextTargetType) && !nextTargetId) {
       return res.status(400).json({
-        message: 'Target id is required for this target type.',
+        message: "Target id is required for this target type.",
       });
     }
 
     if (!(await commentTargetExists(nextTargetType, nextTargetId))) {
       return res.status(404).json({
-        message: 'Comment target not found.',
+        message: "Comment target not found.",
       });
     }
 
-    if (!(await canAdminAccessCommentTarget(req.admin, nextTargetType, nextTargetId))) {
+    if (
+      !(await canAdminAccessCommentTarget(
+        req.admin,
+        nextTargetType,
+        nextTargetId
+      ))
+    ) {
       return res.status(403).json({
-        message: 'You do not have access to this comment target project.',
+        message: "You do not have access to this comment target project.",
       });
     }
 
     let nextParentCommentId = comment.parentCommentId;
     if (hasParentCommentId) {
       const normalizedParentValue =
-        parentCommentId === '' || parentCommentId === null ? null : parentCommentId;
+        parentCommentId === "" || parentCommentId === null
+          ? null
+          : parentCommentId;
 
       if (normalizedParentValue === null) {
         nextParentCommentId = null;
       } else {
         if (!mongoose.Types.ObjectId.isValid(normalizedParentValue)) {
           return res.status(400).json({
-            message: 'Invalid parent comment id.',
+            message: "Invalid parent comment id.",
           });
         }
 
         if (normalizedParentValue === id) {
           return res.status(400).json({
-            message: 'A comment cannot be its own parent.',
+            message: "A comment cannot be its own parent.",
           });
         }
 
         const parentComment = await Comment.findById(normalizedParentValue);
         if (!parentComment) {
           return res.status(404).json({
-            message: 'Parent comment not found.',
+            message: "Parent comment not found.",
           });
         }
 
@@ -902,7 +962,8 @@ router.put(
           )
         ) {
           return res.status(400).json({
-            message: 'Parent comment target does not match this comment target.',
+            message:
+              "Parent comment target does not match this comment target.",
           });
         }
 
@@ -911,20 +972,22 @@ router.put(
     } else if (
       comment.parentCommentId &&
       (hasTargetType || hasTargetId) &&
-      (await Comment.findById(comment.parentCommentId).select('_id targetType targetId').then(
-        (parentComment) =>
-          parentComment &&
-          !commentTargetsMatch(
-            parentComment.targetType,
-            parentComment.targetId,
-            nextTargetType,
-            nextTargetId
-          )
-      ))
+      (await Comment.findById(comment.parentCommentId)
+        .select("_id targetType targetId")
+        .then(
+          (parentComment) =>
+            parentComment &&
+            !commentTargetsMatch(
+              parentComment.targetType,
+              parentComment.targetId,
+              nextTargetType,
+              nextTargetId
+            )
+        ))
     ) {
       return res.status(400).json({
         message:
-          'Changing target type or target id requires updating parent comment id as well.',
+          "Changing target type or target id requires updating parent comment id as well.",
       });
     }
 
@@ -949,15 +1012,15 @@ router.put(
 );
 
 router.delete(
-  '/comments/:id',
+  "/comments/:id",
   authenticateAdmin,
-  requireCommentAccess('delete'),
+  requireCommentAccess("delete"),
   async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
-        message: 'Invalid comment id.',
+        message: "Invalid comment id.",
       });
     }
 
@@ -965,7 +1028,7 @@ router.delete(
 
     if (!comment) {
       return res.status(404).json({
-        message: 'Comment not found.',
+        message: "Comment not found.",
       });
     }
 
@@ -977,7 +1040,7 @@ router.delete(
       ))
     ) {
       return res.status(403).json({
-        message: 'You do not have access to this comment target project.',
+        message: "You do not have access to this comment target project.",
       });
     }
 
@@ -993,10 +1056,9 @@ router.delete(
     );
 
     return res.status(200).json({
-      message: 'Comment deleted.',
+      message: "Comment deleted.",
     });
   }
 );
 
 module.exports = router;
-
