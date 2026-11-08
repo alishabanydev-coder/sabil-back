@@ -5,6 +5,7 @@ const adminRouter = require('./modules');
 const { userAuthRouter } = require('./modules/auth/auth.routes');
 const publicBannerRouter = require('./modules/banners/publicBanner.routes');
 const channelRouter = require('./modules/channels/channel.routes');
+const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
@@ -61,5 +62,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+app.use(errorHandler);
 
 module.exports = app;

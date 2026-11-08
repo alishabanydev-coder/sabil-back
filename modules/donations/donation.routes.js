@@ -1,1060 +1,339 @@
-const fs = require('fs');
-const path = require('path');
-const multer = require('multer');
-
-function createDonationProjectAdminRoutes({
-  router,
-  mongoose,
-  DonationProject,
-  Blog,
-  ProjectBreakDown,
+const express = require('express');
+const {
   authenticateAdmin,
   requireTabPermission,
+} = require('../../middleware/adminAuth');
+const {
+  createImageUpload,
   deleteUploadedFiles,
-  deleteUploadedFile,
   getUploadedFilesByField,
-}) {
-  const donationPosterUploadDir = path.join(
-    __dirname,
-    '..',
-    '..',
-    'uploads',
-    'donation-posters'
+} = require('../../lib/uploads');
+const {
+  parseDonationProjectId,
+  parseDonationScalarFields,
+  parseFaqField,
+  parseSectionsField,
+  parseStaffField,
+  parseStepsField,
+  parseUpdateRefsField,
+  slugifyDonationTitle,
+  normalizeStoredAssetPath,
+  validateDonationScalars,
+} = require('./donation.validation');
+const {
+  assertUpdateRefsExist,
+  createDonationProject,
+  deleteDonationProject,
+  getDonationProject,
+  getDonationProjectDocument,
+  getPublicDonationProject,
+  listDonationProjects,
+  listPublicDonationProjects,
+  saveDonationProjectDocument,
+} = require('./donation.service');
+
+const router = express.Router();
+
+const uploadDonationAssets = createImageUpload({
+  foldersByField: {
+    poster: 'donation-posters',
+    sectionImages: 'donation-section-images',
+    staffPhotos: 'donation-staff-photos',
+  },
+  fields: [
+    { name: 'poster', maxCount: 1 },
+    { name: 'sectionImages', maxCount: 48 },
+    { name: 'staffPhotos', maxCount: 48 },
+  ],
+  maxFileSize: 8 * 1024 * 1024,
+  invalidTypeMessage: 'Donation images must be image files.',
+});
+
+function reject(res, message) {
+  return res.status(400).json({ message });
+}
+
+function collectUploadedFiles(req) {
+  const posterFile = getUploadedFilesByField(req, 'poster')[0];
+  const uploadedSectionImages = getUploadedFilesByField(req, 'sectionImages');
+  const uploadedStaffPhotos = getUploadedFilesByField(req, 'staffPhotos');
+  return {
+    posterFile,
+    uploadedSectionImages,
+    uploadedStaffPhotos,
+    uploadedFiles: [posterFile, ...uploadedSectionImages, ...uploadedStaffPhotos].filter(Boolean),
+  };
+}
+
+function discardUnusedStaffPhotos(uploadedStaffPhotos, usedPhotoFileIndices = []) {
+  deleteUploadedFiles(
+    uploadedStaffPhotos.filter((_file, index) => !usedPhotoFileIndices.includes(index))
   );
-  const donationSectionImageUploadDir = path.join(
-    __dirname,
-    '..',
-    '..',
-    'uploads',
-    'donation-section-images'
-  );
-  const donationStaffPhotoUploadDir = path.join(
-    __dirname,
-    '..',
-    '..',
-    'uploads',
-    'donation-staff-photos'
-  );
+}
 
-  const donationUpload = multer({
-    storage: multer.diskStorage({
-      destination(req, file, callback) {
-        let destinationDir = donationSectionImageUploadDir;
-
-        if (file.fieldname === 'poster') {
-          destinationDir = donationPosterUploadDir;
-        } else if (file.fieldname === 'staffPhotos') {
-          destinationDir = donationStaffPhotoUploadDir;
-        }
-
-        fs.mkdirSync(destinationDir, { recursive: true });
-        callback(null, destinationDir);
-      },
-      filename(_req, file, callback) {
-        const extension = path.extname(file.originalname).toLowerCase();
-        const uniqueName = `${Date.now()}-${Math.round(
-          Math.random() * 1e9
-        )}${extension}`;
-
-        callback(null, uniqueName);
-      },
-    }),
-    limits: {
-      fileSize: 8 * 1024 * 1024,
-    },
-    fileFilter(_req, file, callback) {
-      if (!file.mimetype.startsWith('image/')) {
-        callback(new Error('Donation images must be image files.'));
-        return;
-      }
-
-      callback(null, true);
-    },
-  });
-
-  function uploadDonationAssets(req, res, next) {
-    donationUpload.fields([
-      { name: 'poster', maxCount: 1 },
-      { name: 'sectionImages', maxCount: 48 },
-      { name: 'staffPhotos', maxCount: 48 },
-    ])(req, res, (error) => {
-      if (!error) {
-        return next();
-      }
-
-      return res.status(400).json({
-        message: error.message,
-      });
-    });
+async function readDonationBody(req, uploadedSectionImages, uploadedStaffPhotos, partial) {
+  const parsedSections = partial.sections
+    ? parseSectionsField(req.body?.sections, uploadedSectionImages)
+    : null;
+  if (parsedSections && !parsedSections.ok) {
+    return parsedSections;
   }
 
-  function slugifyDonationTitle(title) {
-    const slug = String(title || '')
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s-]/g, '')
-      .replace(/[\s_-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 180);
-
-    return slug || `donation-${Date.now()}`;
+  const parsedFaq = partial.faq ? parseFaqField(req.body?.faq) : null;
+  if (parsedFaq && !parsedFaq.ok) {
+    return parsedFaq;
   }
 
-  function normalizeStoredAssetPath(value) {
-    if (typeof value !== 'string') {
-      return '';
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.startsWith('blob:') || trimmed.startsWith('data:')) {
-      return '';
-    }
-
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      try {
-        const parsed = new URL(trimmed);
-        return parsed.pathname.startsWith('/uploads/')
-          ? parsed.pathname
-          : trimmed;
-      } catch {
-        return trimmed;
-      }
-    }
-
-    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  const parsedSteps = partial.steps ? parseStepsField(req.body?.steps) : null;
+  if (parsedSteps && !parsedSteps.ok) {
+    return parsedSteps;
   }
 
-  function normalizeDonationProjectRecord(project) {
-    if (!project) {
-      return project;
-    }
-
-    const plain =
-      typeof project.toObject === 'function' ? project.toObject() : project;
-
-    return {
-      ...plain,
-      poster: normalizeStoredAssetPath(plain.poster),
-      donorCount: Number(plain.donorCount ?? 0),
-      sections: Array.isArray(plain.sections)
-        ? plain.sections.map((section) => ({
-            ...section,
-            images: Array.isArray(section.images)
-              ? section.images
-                  .map((image) => normalizeStoredAssetPath(image))
-                  .filter(Boolean)
-              : [],
-          }))
-        : [],
-      steps: Array.isArray(plain.steps) ? plain.steps : [],
-      staff: Array.isArray(plain.staff)
-        ? plain.staff.map((member) => ({
-            ...member,
-            photo: member.photo
-              ? normalizeStoredAssetPath(member.photo)
-              : null,
-          }))
-        : [],
-    };
+  const parsedStaff = partial.staff
+    ? parseStaffField(req.body?.staff, uploadedStaffPhotos)
+    : null;
+  if (parsedStaff && !parsedStaff.ok) {
+    return parsedStaff;
   }
 
-  function parseJsonField(rawValue, fieldName) {
-    if (rawValue === undefined || rawValue === null || rawValue === '') {
-      return { ok: true, value: [] };
-    }
-
-    if (typeof rawValue === 'string') {
-      try {
-        return { ok: true, value: JSON.parse(rawValue) };
-      } catch {
-        return { ok: false, message: `Invalid ${fieldName} payload.` };
-      }
-    }
-
-    return { ok: true, value: rawValue };
+  const parsedUpdateRefs = partial.updateRefs ? parseUpdateRefsField(req.body?.updateRefs) : null;
+  if (parsedUpdateRefs && !parsedUpdateRefs.ok) {
+    return parsedUpdateRefs;
   }
 
-  function parseSectionsField(rawSections, uploadedSectionImages) {
-    const parsed = parseJsonField(rawSections, 'sections');
-    if (!parsed.ok) {
-      return parsed;
-    }
-
-    if (!Array.isArray(parsed.value)) {
-      return { ok: false, message: 'Sections must be an array.' };
-    }
-
-    const usedImageFileIndices = [];
-    const sections = [];
-
-    for (const item of parsed.value) {
-      const id = typeof item?.id === 'string' ? item.id.trim() : '';
-      if (!id) {
-        return { ok: false, message: 'Each section requires an id.' };
-      }
-
-      const images = [];
-      const rawImages = Array.isArray(item?.images) ? item.images : [];
-
-      for (const imageItem of rawImages) {
-        if (typeof imageItem === 'string') {
-          const normalized = normalizeStoredAssetPath(imageItem);
-          if (normalized) {
-            images.push(normalized);
-          }
-          continue;
-        }
-
-        if (
-          imageItem &&
-          typeof imageItem === 'object' &&
-          Number.isInteger(imageItem.imageFileIndex)
-        ) {
-          const uploadedFile =
-            uploadedSectionImages[imageItem.imageFileIndex] || null;
-
-          if (!uploadedFile) {
-            return {
-              ok: false,
-              message: 'Section image upload is missing for one or more sections.',
-            };
-          }
-
-          usedImageFileIndices.push(imageItem.imageFileIndex);
-          images.push(
-            `/uploads/donation-section-images/${uploadedFile.filename}`
-          );
-        }
-      }
-
-      sections.push({
-        id,
-        header:
-          typeof item?.header === 'string' && item.header.trim()
-            ? item.header.trim()
-            : null,
-        text:
-          typeof item?.text === 'string' && item.text.trim()
-            ? item.text.trim()
-            : null,
-        images,
-        order:
-          typeof item?.order === 'number' && item.order >= 0 ? item.order : 0,
-      });
-    }
-
-    return {
-      ok: true,
-      sections,
-      usedImageFileIndices,
-    };
+  if (parsedUpdateRefs?.ok) {
+    await assertUpdateRefsExist(parsedUpdateRefs.updateRefs);
   }
 
-  function parseFaqField(rawFaq) {
-    const parsed = parseJsonField(rawFaq, 'faq');
-    if (!parsed.ok) {
-      return parsed;
+  return {
+    ok: true,
+    parsedSections,
+    parsedFaq,
+    parsedSteps,
+    parsedStaff,
+    parsedUpdateRefs,
+  };
+}
+
+router.get('/public/donation-projects', async (_req, res) => {
+  const donationProjects = await listPublicDonationProjects();
+  return res.status(200).json({ donationProjects });
+});
+
+router.get('/public/donation-projects/:slugOrId', async (req, res) => {
+  const donationProject = await getPublicDonationProject(req.params.slugOrId);
+  return res.status(200).json({ donationProject });
+});
+
+router.get(
+  '/donation-projects',
+  authenticateAdmin,
+  requireTabPermission('donation', 'read'),
+  async (_req, res) => {
+    const donationProjects = await listDonationProjects();
+    return res.status(200).json({ donationProjects });
+  }
+);
+
+router.get(
+  '/donation-projects/:id',
+  authenticateAdmin,
+  requireTabPermission('donation', 'read'),
+  async (req, res) => {
+    const parsedId = parseDonationProjectId(req.params.id);
+    if (!parsedId.ok) {
+      return reject(res, parsedId.message);
     }
 
-    if (!Array.isArray(parsed.value)) {
-      return { ok: false, message: 'FAQ must be an array.' };
-    }
+    const donationProject = await getDonationProject(parsedId.value);
+    return res.status(200).json({ donationProject });
+  }
+);
 
-    const faq = parsed.value.map((item, index) => {
-      const header = typeof item?.header === 'string' ? item.header.trim() : '';
-      const summary = typeof item?.summary === 'string' ? item.summary.trim() : '';
-
-      if (!header) {
-        throw new Error(`FAQ item ${index + 1} requires a header.`);
-      }
-
-      return {
-        header,
-        summary: summary || '-',
-        order:
-          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
-      };
+router.post(
+  '/donation-projects',
+  authenticateAdmin,
+  requireTabPermission('donation', 'create'),
+  uploadDonationAssets,
+  async (req, res, next) => {
+    const files = collectUploadedFiles(req);
+    const fields = parseDonationScalarFields(req.body);
+    const scalarError = validateDonationScalars(fields, {
+      requirePosterPath: files.posterFile,
     });
 
-    return { ok: true, faq };
-  }
-
-  function parseStepsField(rawSteps) {
-    const parsed = parseJsonField(rawSteps, 'steps');
-    if (!parsed.ok) {
-      return parsed;
+    if (scalarError || !files.posterFile) {
+      deleteUploadedFiles(files.uploadedFiles);
+      return reject(res, scalarError || 'Poster image is required.');
     }
 
-    if (!Array.isArray(parsed.value)) {
-      return { ok: false, message: 'Steps must be an array.' };
-    }
-
-    const allowedStatuses = new Set([
-      'upcoming',
-      'in_progress',
-      'completed',
-      'skipped',
-    ]);
-
-    const steps = parsed.value.map((item, index) => {
-      const id = typeof item?.id === 'string' ? item.id.trim() : '';
-      const label = typeof item?.label === 'string' ? item.label.trim() : '';
-      const status = allowedStatuses.has(item?.status)
-        ? item.status
-        : 'upcoming';
-      const spentAmount = Number(item?.spentAmount ?? 0);
-
-      if (!id) {
-        throw new Error(`Step ${index + 1} requires an id.`);
-      }
-
-      if (!label) {
-        throw new Error(`Step ${index + 1} requires a label.`);
-      }
-
-      if (!Number.isFinite(spentAmount) || spentAmount < 0) {
-        throw new Error(`Step ${index + 1} spent amount must be non-negative.`);
-      }
-
-      return {
-        id,
-        label,
-        status,
-        spentAmount: status === 'upcoming' ? 0 : spentAmount,
-        order:
-          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
-      };
-    });
-
-    return { ok: true, steps };
-  }
-
-  function discardUnusedStaffPhotos(uploadedStaffPhotos, usedPhotoFileIndices = []) {
-    deleteUploadedFiles(
-      uploadedStaffPhotos.filter(
-        (_file, index) => !usedPhotoFileIndices.includes(index)
-      )
-    );
-  }
-
-  function parseStaffField(rawStaff, uploadedStaffPhotos = []) {
-    const parsed = parseJsonField(rawStaff, 'staff');
-    if (!parsed.ok) {
-      return parsed;
-    }
-
-    if (!Array.isArray(parsed.value)) {
-      return { ok: false, message: 'Staff must be an array.' };
-    }
-
-    const usedPhotoFileIndices = [];
-    const staff = parsed.value.map((item, index) => {
-      const id = typeof item?.id === 'string' ? item.id.trim() : '';
-      const name = typeof item?.name === 'string' ? item.name.trim() : '';
-      const role = typeof item?.role === 'string' ? item.role.trim() : '';
-      const bio =
-        typeof item?.bio === 'string' && item.bio.trim()
-          ? item.bio.trim()
-          : null;
-      let photo = null;
-
-      if (!id) {
-        throw new Error(`Staff member ${index + 1} requires an id.`);
-      }
-
-      if (!name) {
-        throw new Error(`Staff member ${index + 1} requires a name.`);
-      }
-
-      if (!role) {
-        throw new Error(`Staff member ${index + 1} requires a role.`);
-      }
-
-      if (Number.isInteger(item?.photoFileIndex)) {
-        const uploadedFile = uploadedStaffPhotos[item.photoFileIndex] || null;
-
-        if (!uploadedFile) {
-          throw new Error(
-            `Staff member ${index + 1} photo upload is missing.`
-          );
-        }
-
-        usedPhotoFileIndices.push(item.photoFileIndex);
-        photo = `/uploads/donation-staff-photos/${uploadedFile.filename}`;
-      } else if (
-        item?.photo !== undefined &&
-        item?.photo !== null &&
-        item?.photo !== ''
-      ) {
-        const normalized = normalizeStoredAssetPath(item.photo);
-
-        if (!normalized.startsWith('/uploads/')) {
-          throw new Error(
-            `Staff member ${index + 1} photo must be an uploaded image file.`
-          );
-        }
-
-        photo = normalized;
-      }
-
-      return {
-        id,
-        name,
-        role,
-        photo,
-        bio,
-        order:
-          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
-      };
-    });
-
-    return { ok: true, staff, usedPhotoFileIndices };
-  }
-
-  async function parseUpdateRefsField(rawUpdateRefs) {
-    const parsed = parseJsonField(rawUpdateRefs, 'updateRefs');
-    if (!parsed.ok) {
-      return parsed;
-    }
-
-    if (!Array.isArray(parsed.value)) {
-      return { ok: false, message: 'updateRefs must be an array.' };
-    }
-
-    const updateRefs = [];
-
-    for (const [index, item] of parsed.value.entries()) {
-      const refType = item?.refType;
-      const refId = item?.refId;
-
-      if (refType !== 'Blog' && refType !== 'BreakDown') {
-        return {
-          ok: false,
-          message: `Update ref ${index + 1} has an invalid refType.`,
-        };
-      }
-
-      if (!mongoose.Types.ObjectId.isValid(refId)) {
-        return {
-          ok: false,
-          message: `Update ref ${index + 1} has an invalid refId.`,
-        };
-      }
-
-      const model = refType === 'Blog' ? Blog : ProjectBreakDown;
-      const exists = await model.exists({ _id: refId });
-
-      if (!exists) {
-        return {
-          ok: false,
-          message: `${refType} reference was not found for update ref ${index + 1}.`,
-        };
-      }
-
-      updateRefs.push({
-        refType,
-        refId,
-        order:
-          typeof item?.order === 'number' && item.order >= 0 ? item.order : index,
-      });
-    }
-
-    return { ok: true, updateRefs };
-  }
-
-  function parseDonationScalarFields(body = {}) {
-    const title = typeof body.title === 'string' ? body.title.trim() : '';
-    const shortDescription =
-      typeof body.shortDescription === 'string'
-        ? body.shortDescription.trim()
-        : '';
-    const goalAmount = Number(body.goalAmount);
-    const raisedAmount =
-      body.raisedAmount === undefined || body.raisedAmount === ''
-        ? 0
-        : Number(body.raisedAmount);
-    const donorCount =
-      body.donorCount === undefined || body.donorCount === ''
-        ? 0
-        : Number(body.donorCount);
-    const currency = body.currency === 'INR' ? 'INR' : 'USD';
-    const status =
-      body.status === 'finished' || body.status === 'paused'
-        ? body.status
-        : 'ongoing';
-    const startDate = body.startDate ? new Date(body.startDate) : null;
-    const endDate =
-      body.endDate === undefined || body.endDate === null || body.endDate === ''
-        ? null
-        : new Date(body.endDate);
-    const projectId =
-      body.projectId &&
-      mongoose.Types.ObjectId.isValid(String(body.projectId))
-        ? body.projectId
-        : null;
-    const showOnDonationPage = (() => {
-      const value = body.showOnDonationPage;
-
-      if (value === undefined || value === null || value === "") {
-        return true;
-      }
-
-      if (value === false || value === "false" || value === "0") {
-        return false;
-      }
-
-      return true;
-    })();
-    const listOrderRaw = body.listOrder;
-    const listOrder =
-      listOrderRaw === undefined || listOrderRaw === null || listOrderRaw === ''
-        ? null
-        : Number(listOrderRaw);
-    const videoUrl =
-      typeof body.videoUrl === 'string' && body.videoUrl.trim()
-        ? body.videoUrl.trim()
-        : null;
-    const slug =
-      typeof body.slug === 'string' && body.slug.trim()
-        ? body.slug.trim().toLowerCase()
-        : slugifyDonationTitle(title);
-
-    return {
-      title,
-      slug,
-      shortDescription,
-      goalAmount,
-      raisedAmount,
-      donorCount,
-      currency,
-      status,
-      startDate,
-      endDate,
-      projectId,
-      showOnDonationPage,
-      listOrder,
-      videoUrl,
-    };
-  }
-
-  function validateDonationScalars(fields, { requirePosterPath }) {
-    if (!fields.title) {
-      return 'Title is required.';
-    }
-
-    if (!Number.isFinite(fields.goalAmount) || fields.goalAmount < 0) {
-      return 'Goal amount must be a valid non-negative number.';
-    }
-
-    if (!Number.isFinite(fields.raisedAmount) || fields.raisedAmount < 0) {
-      return 'Raised amount must be a valid non-negative number.';
-    }
-
-    if (!Number.isFinite(fields.donorCount) || fields.donorCount < 0) {
-      return 'Donor count must be a valid non-negative number.';
-    }
-
-    if (!Number.isInteger(fields.donorCount)) {
-      return 'Donor count must be a whole number.';
-    }
-
-    if (!fields.startDate || Number.isNaN(fields.startDate.getTime())) {
-      return 'Start date is required.';
-    }
-
-    if (
-      fields.endDate &&
-      (Number.isNaN(fields.endDate.getTime()) ||
-        fields.endDate.getTime() < fields.startDate.getTime())
-    ) {
-      return 'End date must be after the start date.';
-    }
-
-    if (
-      fields.listOrder !== null &&
-      (!Number.isInteger(fields.listOrder) || fields.listOrder < 1)
-    ) {
-      return 'listOrder must be a positive integer when provided.';
-    }
-
-    if (!requirePosterPath) {
-      return 'Poster image is required.';
-    }
-
-    return '';
-  }
-
-  router.get('/public/donation-projects', async (_req, res) => {
-    const projects = await DonationProject.find({ showOnDonationPage: true })
-      .sort({ listOrder: 1, createdAt: -1 })
-      .select(
-        'title slug poster shortDescription goalAmount raisedAmount donorCount currency status listOrder'
-      )
-      .lean();
-
-    return res.status(200).json({
-      donationProjects: projects.map(normalizeDonationProjectRecord),
-    });
-  });
-
-  router.get('/public/donation-projects/:slugOrId', async (req, res) => {
-    const { slugOrId } = req.params;
-    const query = mongoose.Types.ObjectId.isValid(slugOrId)
-      ? { _id: slugOrId }
-      : { slug: String(slugOrId).trim().toLowerCase() };
-
-    const project = await DonationProject.findOne({
-      ...query,
-      showOnDonationPage: true,
-    }).lean();
-
-    if (!project) {
-      return res.status(404).json({
-        message: 'Donation project not found.',
-      });
-    }
-
-    const updateRefs = Array.isArray(project.updateRefs) ? project.updateRefs : [];
-    const sortedRefs = updateRefs
-      .slice()
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-    const updates = [];
-
-    for (const ref of sortedRefs) {
-      if (ref.refType === 'Blog') {
-        const blog = await Blog.findById(ref.refId).lean();
-        if (!blog) {
-          continue;
-        }
-
-        updates.push({
-          id: blog._id.toString(),
-          refType: 'Blog',
-          order: ref.order ?? 0,
-          title: blog.title,
-          subHeader: blog.subHeader ?? '',
-          content: blog.content,
-          createdAt: blog.createdAt,
-          authorName: 'Sabeel Media Cast',
-          authorAvatar: '/avatar1.webp',
-          images: Array.isArray(blog.image)
-            ? blog.image.map((image) => normalizeStoredAssetPath(image)).filter(Boolean)
-            : [],
-          videoUrl: blog.videoUrl ?? '',
-        });
-        continue;
-      }
-
-      const breakdown = await ProjectBreakDown.findById(ref.refId).lean();
-      if (!breakdown) {
-        continue;
-      }
-
-      updates.push({
-        id: breakdown._id.toString(),
-        refType: 'BreakDown',
-        order: ref.order ?? 0,
-        title: breakdown.title,
-        content: breakdown.content,
-        createdAt: breakdown.createdAt,
-        authorName: 'Sabeel Media Cast',
-        authorAvatar: '/avatar1.webp',
-        images: breakdown.thumbnail
-          ? [normalizeStoredAssetPath(breakdown.thumbnail)].filter(Boolean)
-          : [],
-        videoUrl: breakdown.videoUrl ?? '',
-      });
-    }
-
-    return res.status(200).json({
-      donationProject: {
-        ...normalizeDonationProjectRecord(project),
-        updates,
-      },
-    });
-  });
-
-  router.get(
-    '/donation-projects',
-    authenticateAdmin,
-    requireTabPermission('donation', 'read'),
-    async (_req, res) => {
-      const projects = await DonationProject.find({})
-        .sort({ listOrder: 1, createdAt: -1 })
-        .lean();
-
-      return res.status(200).json({
-        donationProjects: projects.map(normalizeDonationProjectRecord),
-      });
-    }
-  );
-
-  router.get(
-    '/donation-projects/:id',
-    authenticateAdmin,
-    requireTabPermission('donation', 'read'),
-    async (req, res) => {
-      const { id } = req.params;
-
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({
-          message: 'Invalid donation project id.',
-        });
-      }
-
-      const project = await DonationProject.findById(id).lean();
-
-      if (!project) {
-        return res.status(404).json({
-          message: 'Donation project not found.',
-        });
-      }
-
-      return res.status(200).json({
-        donationProject: normalizeDonationProjectRecord(project),
-      });
-    }
-  );
-
-  router.post(
-    '/donation-projects',
-    authenticateAdmin,
-    requireTabPermission('donation', 'create'),
-    uploadDonationAssets,
-    async (req, res) => {
-      const posterFile = getUploadedFilesByField(req, 'poster')[0];
-      const uploadedSectionImages = getUploadedFilesByField(
-        req,
-        'sectionImages'
-      );
-      const uploadedStaffPhotos = getUploadedFilesByField(req, 'staffPhotos');
-      const uploadedFiles = [
-        posterFile,
-        ...uploadedSectionImages,
-        ...uploadedStaffPhotos,
-      ].filter(Boolean);
-      const fields = parseDonationScalarFields(req.body);
-      const scalarError = validateDonationScalars(fields, {
-        requirePosterPath: posterFile,
+    try {
+      const parsed = await readDonationBody(req, files.uploadedSectionImages, files.uploadedStaffPhotos, {
+        sections: true,
+        faq: true,
+        steps: true,
+        staff: true,
+        updateRefs: true,
       });
 
-      if (scalarError || !posterFile) {
-        deleteUploadedFiles(uploadedFiles);
-
-        return res.status(400).json({
-          message: scalarError || 'Poster image is required.',
-        });
-      }
-
-      let parsedSections;
-      let parsedFaq;
-      let parsedSteps;
-      let parsedStaff;
-      let parsedUpdateRefs;
-
-      try {
-        parsedSections = parseSectionsField(
-          req.body?.sections,
-          uploadedSectionImages
-        );
-        if (!parsedSections.ok) {
-          deleteUploadedFiles(uploadedFiles);
-          return res.status(400).json({ message: parsedSections.message });
-        }
-
-        parsedFaq = parseFaqField(req.body?.faq);
-        if (!parsedFaq.ok) {
-          deleteUploadedFiles(uploadedFiles);
-          return res.status(400).json({ message: parsedFaq.message });
-        }
-
-        parsedSteps = parseStepsField(req.body?.steps);
-        if (!parsedSteps.ok) {
-          deleteUploadedFiles(uploadedFiles);
-          return res.status(400).json({ message: parsedSteps.message });
-        }
-
-        parsedStaff = parseStaffField(req.body?.staff, uploadedStaffPhotos);
-        if (!parsedStaff.ok) {
-          deleteUploadedFiles(uploadedFiles);
-          return res.status(400).json({ message: parsedStaff.message });
-        }
-
-        parsedUpdateRefs = await parseUpdateRefsField(req.body?.updateRefs);
-        if (!parsedUpdateRefs.ok) {
-          deleteUploadedFiles(uploadedFiles);
-          return res.status(400).json({ message: parsedUpdateRefs.message });
-        }
-      } catch (error) {
-        deleteUploadedFiles(uploadedFiles);
-
-        return res.status(400).json({
-          message: error.message,
-        });
+      if (!parsed.ok) {
+        deleteUploadedFiles(files.uploadedFiles);
+        return reject(res, parsed.message);
       }
 
       discardUnusedStaffPhotos(
-        uploadedStaffPhotos,
-        parsedStaff.usedPhotoFileIndices
+        files.uploadedStaffPhotos,
+        parsed.parsedStaff.usedPhotoFileIndices
       );
 
-      try {
-        const project = await DonationProject.create({
-          title: fields.title,
-          slug: fields.slug,
-          poster: `/uploads/donation-posters/${posterFile.filename}`,
-          videoUrl: fields.videoUrl,
-          shortDescription: fields.shortDescription,
-          goalAmount: fields.goalAmount,
-          raisedAmount: fields.raisedAmount,
-          donorCount: fields.donorCount,
-          currency: fields.currency,
-          sections: parsedSections.sections,
-          faq: parsedFaq.faq,
-          steps: parsedSteps.steps,
-          staff: parsedStaff.staff,
-          startDate: fields.startDate,
-          endDate: fields.endDate,
-          status: fields.status,
-          projectId: fields.projectId,
-          updateRefs: parsedUpdateRefs.updateRefs,
-          showOnDonationPage: fields.showOnDonationPage,
-          listOrder: fields.listOrder,
-        });
+      const donationProject = await createDonationProject({
+        title: fields.title,
+        slug: fields.slug,
+        poster: `/uploads/donation-posters/${files.posterFile.filename}`,
+        videoUrl: fields.videoUrl,
+        shortDescription: fields.shortDescription,
+        goalAmount: fields.goalAmount,
+        raisedAmount: fields.raisedAmount,
+        donorCount: fields.donorCount,
+        currency: fields.currency,
+        sections: parsed.parsedSections.sections,
+        faq: parsed.parsedFaq.faq,
+        steps: parsed.parsedSteps.steps,
+        staff: parsed.parsedStaff.staff,
+        startDate: fields.startDate,
+        endDate: fields.endDate,
+        status: fields.status,
+        projectId: fields.projectId,
+        updateRefs: parsed.parsedUpdateRefs.updateRefs,
+        showOnDonationPage: fields.showOnDonationPage,
+        listOrder: fields.listOrder,
+      });
 
-        return res.status(201).json({
-          donationProject: normalizeDonationProjectRecord(project.toObject()),
-        });
-      } catch (error) {
-        deleteUploadedFiles(uploadedFiles);
-
-        if (error?.code === 11000) {
-          return res.status(409).json({
-            message: 'A donation project with this slug already exists.',
-          });
-        }
-
-        return res.status(400).json({
-          message: error.message,
-        });
-      }
+      return res.status(201).json({ donationProject });
+    } catch (error) {
+      deleteUploadedFiles(files.uploadedFiles);
+      return next(error);
     }
-  );
+  }
+);
 
-  router.patch(
-    '/donation-projects/:id',
-    authenticateAdmin,
-    requireTabPermission('donation', 'update'),
-    uploadDonationAssets,
-    async (req, res) => {
-      const { id } = req.params;
+router.patch(
+  '/donation-projects/:id',
+  authenticateAdmin,
+  requireTabPermission('donation', 'update'),
+  uploadDonationAssets,
+  async (req, res, next) => {
+    const parsedId = parseDonationProjectId(req.params.id);
+    if (!parsedId.ok) {
+      return reject(res, parsedId.message);
+    }
 
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({
-          message: 'Invalid donation project id.',
-        });
-      }
+    const files = collectUploadedFiles(req);
 
-      const project = await DonationProject.findById(id);
-
-      if (!project) {
-        return res.status(404).json({
-          message: 'Donation project not found.',
-        });
-      }
-
-      const posterFile = getUploadedFilesByField(req, 'poster')[0];
-      const uploadedSectionImages = getUploadedFilesByField(
-        req,
-        'sectionImages'
-      );
-      const uploadedStaffPhotos = getUploadedFilesByField(req, 'staffPhotos');
-      const uploadedFiles = [
-        posterFile,
-        ...uploadedSectionImages,
-        ...uploadedStaffPhotos,
-      ].filter(Boolean);
+    try {
+      const existing = await getDonationProjectDocument(parsedId.value);
       const fields = parseDonationScalarFields({
-        ...project.toObject(),
+        ...existing.toObject(),
         ...req.body,
         slug:
           req.body?.slug !== undefined
             ? req.body.slug
-            : project.slug || slugifyDonationTitle(req.body?.title || project.title),
+            : existing.slug || slugifyDonationTitle(req.body?.title || existing.title),
       });
       const scalarError = validateDonationScalars(fields, {
-        requirePosterPath: posterFile || project.poster,
+        requirePosterPath: files.posterFile || existing.poster,
       });
 
       if (scalarError) {
-        deleteUploadedFiles(uploadedFiles);
-
-        return res.status(400).json({
-          message: scalarError,
-        });
+        deleteUploadedFiles(files.uploadedFiles);
+        return reject(res, scalarError);
       }
 
-      let parsedSections;
-      let parsedFaq;
-      let parsedSteps;
-      let parsedStaff;
-      let parsedUpdateRefs;
-
-      try {
-        if (req.body?.sections !== undefined) {
-          parsedSections = parseSectionsField(
-            req.body.sections,
-            uploadedSectionImages
-          );
-          if (!parsedSections.ok) {
-            deleteUploadedFiles(uploadedFiles);
-            return res.status(400).json({ message: parsedSections.message });
-          }
+      const parsed = await readDonationBody(
+        req,
+        files.uploadedSectionImages,
+        files.uploadedStaffPhotos,
+        {
+          sections: req.body?.sections !== undefined,
+          faq: req.body?.faq !== undefined,
+          steps: req.body?.steps !== undefined,
+          staff: req.body?.staff !== undefined,
+          updateRefs: req.body?.updateRefs !== undefined,
         }
+      );
 
-        if (req.body?.faq !== undefined) {
-          parsedFaq = parseFaqField(req.body.faq);
-          if (!parsedFaq.ok) {
-            deleteUploadedFiles(uploadedFiles);
-            return res.status(400).json({ message: parsedFaq.message });
-          }
-        }
-
-        if (req.body?.steps !== undefined) {
-          parsedSteps = parseStepsField(req.body.steps);
-          if (!parsedSteps.ok) {
-            deleteUploadedFiles(uploadedFiles);
-            return res.status(400).json({ message: parsedSteps.message });
-          }
-        }
-
-        if (req.body?.staff !== undefined) {
-          parsedStaff = parseStaffField(req.body.staff, uploadedStaffPhotos);
-          if (!parsedStaff.ok) {
-            deleteUploadedFiles(uploadedFiles);
-            return res.status(400).json({ message: parsedStaff.message });
-          }
-        }
-
-        if (req.body?.updateRefs !== undefined) {
-          parsedUpdateRefs = await parseUpdateRefsField(req.body.updateRefs);
-          if (!parsedUpdateRefs.ok) {
-            deleteUploadedFiles(uploadedFiles);
-            return res.status(400).json({ message: parsedUpdateRefs.message });
-          }
-        }
-      } catch (error) {
-        deleteUploadedFiles(uploadedFiles);
-
-        return res.status(400).json({
-          message: error.message,
-        });
+      if (!parsed.ok) {
+        deleteUploadedFiles(files.uploadedFiles);
+        return reject(res, parsed.message);
       }
 
       discardUnusedStaffPhotos(
-        uploadedStaffPhotos,
-        parsedStaff?.usedPhotoFileIndices
+        files.uploadedStaffPhotos,
+        parsed.parsedStaff?.usedPhotoFileIndices
       );
 
-      try {
-        project.title = fields.title;
-        project.slug = fields.slug;
-        project.videoUrl = fields.videoUrl;
-        project.shortDescription = fields.shortDescription;
-        project.goalAmount = fields.goalAmount;
-        project.raisedAmount = fields.raisedAmount;
-        project.donorCount = fields.donorCount;
-        project.currency = fields.currency;
-        project.startDate = fields.startDate;
-        project.endDate = fields.endDate;
-        project.status = fields.status;
-        project.projectId = fields.projectId;
-        project.showOnDonationPage = fields.showOnDonationPage;
-        project.listOrder = fields.listOrder;
+      existing.title = fields.title;
+      existing.slug = fields.slug;
+      existing.videoUrl = fields.videoUrl;
+      existing.shortDescription = fields.shortDescription;
+      existing.goalAmount = fields.goalAmount;
+      existing.raisedAmount = fields.raisedAmount;
+      existing.donorCount = fields.donorCount;
+      existing.currency = fields.currency;
+      existing.startDate = fields.startDate;
+      existing.endDate = fields.endDate;
+      existing.status = fields.status;
+      existing.projectId = fields.projectId;
+      existing.showOnDonationPage = fields.showOnDonationPage;
+      existing.listOrder = fields.listOrder;
 
-        if (posterFile) {
-          project.poster = `/uploads/donation-posters/${posterFile.filename}`;
-        } else if (typeof req.body?.existingPoster === 'string') {
-          const normalizedPoster = normalizeStoredAssetPath(
-            req.body.existingPoster
-          );
-          if (normalizedPoster) {
-            project.poster = normalizedPoster;
-          }
+      if (files.posterFile) {
+        existing.poster = `/uploads/donation-posters/${files.posterFile.filename}`;
+      } else if (typeof req.body?.existingPoster === 'string') {
+        const normalizedPoster = normalizeStoredAssetPath(req.body.existingPoster);
+        if (normalizedPoster) {
+          existing.poster = normalizedPoster;
         }
-
-        if (parsedSections?.ok) {
-          project.sections = parsedSections.sections;
-        }
-
-        if (parsedFaq?.ok) {
-          project.faq = parsedFaq.faq;
-        }
-
-        if (parsedSteps?.ok) {
-          project.steps = parsedSteps.steps;
-        }
-
-        if (parsedStaff?.ok) {
-          project.staff = parsedStaff.staff;
-        }
-
-        if (parsedUpdateRefs?.ok) {
-          project.updateRefs = parsedUpdateRefs.updateRefs;
-        }
-
-        await project.save();
-
-        return res.status(200).json({
-          donationProject: normalizeDonationProjectRecord(project.toObject()),
-        });
-      } catch (error) {
-        deleteUploadedFiles(uploadedFiles);
-
-        if (error?.code === 11000) {
-          return res.status(409).json({
-            message: 'A donation project with this slug already exists.',
-          });
-        }
-
-        return res.status(400).json({
-          message: error.message,
-        });
       }
+
+      if (parsed.parsedSections?.ok) {
+        existing.sections = parsed.parsedSections.sections;
+      }
+      if (parsed.parsedFaq?.ok) {
+        existing.faq = parsed.parsedFaq.faq;
+      }
+      if (parsed.parsedSteps?.ok) {
+        existing.steps = parsed.parsedSteps.steps;
+      }
+      if (parsed.parsedStaff?.ok) {
+        existing.staff = parsed.parsedStaff.staff;
+      }
+      if (parsed.parsedUpdateRefs?.ok) {
+        existing.updateRefs = parsed.parsedUpdateRefs.updateRefs;
+      }
+
+      const donationProject = await saveDonationProjectDocument(existing);
+      return res.status(200).json({ donationProject });
+    } catch (error) {
+      deleteUploadedFiles(files.uploadedFiles);
+      return next(error);
     }
-  );
+  }
+);
 
-  router.delete(
-    '/donation-projects/:id',
-    authenticateAdmin,
-    requireTabPermission('donation', 'delete'),
-    async (req, res) => {
-      const { id } = req.params;
-
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        return res.status(400).json({
-          message: 'Invalid donation project id.',
-        });
-      }
-
-      const project = await DonationProject.findById(id);
-
-      if (!project) {
-        return res.status(404).json({
-          message: 'Donation project not found.',
-        });
-      }
-
-      await project.deleteOne();
-
-      return res.status(200).json({
-        message: 'Donation project deleted.',
-      });
+router.delete(
+  '/donation-projects/:id',
+  authenticateAdmin,
+  requireTabPermission('donation', 'delete'),
+  async (req, res) => {
+    const parsedId = parseDonationProjectId(req.params.id);
+    if (!parsedId.ok) {
+      return reject(res, parsedId.message);
     }
-  );
-}
 
-module.exports = {
-  createDonationProjectAdminRoutes,
-};
+    await deleteDonationProject(parsedId.value);
+    return res.status(200).json({ message: 'Donation project deleted.' });
+  }
+);
+
+module.exports = router;

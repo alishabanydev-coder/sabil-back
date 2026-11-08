@@ -1,13 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const mongoose = require('mongoose');
 const User = require('../../models/user.model');
-const Comment = require('../../models/comment.model');
-const DonationProject = require('../../models/donationProject.model');
-const Project = require('../../models/project.model');
-const Video = require('../../models/video.model');
-const Blog = require('../../models/blog.model');
-const ProjectBreakDown = require('../../models/projectBreakDown.model');
 const {
   altchaChallengeHandler,
   altchaMiddleware,
@@ -17,77 +10,21 @@ const {
   userRegisterRateLimit,
   commentPostRateLimit,
 } = require('../../rateLimits');
+const {
+  parseCommentPageLimit,
+  parseCreatePublicComment,
+  parsePublicCommentListQuery,
+} = require('../comments/comment.validation');
+const {
+  createPublicComment,
+  listFeaturedPublicComments,
+  listPublicComments,
+} = require('../comments/comment.service');
 
 const router = express.Router();
 
-const PUBLIC_COMMENT_TARGET_TYPES = [
-  'video',
-  'blog',
-  'breakdown',
-  'general',
-  'project',
-  'projectDonation',
-];
-
-const COMMENT_TARGET_MODELS = {
-  video: Video,
-  blog: Blog,
-  breakdown: ProjectBreakDown,
-  project: Project,
-  projectDonation: DonationProject,
-};
-
 function getUserJwtSecret() {
   return process.env.USER_JWT_SECRET;
-}
-
-function normalizeCommentTargetType(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function isValidPublicCommentTargetType(targetType) {
-  return PUBLIC_COMMENT_TARGET_TYPES.includes(targetType);
-}
-
-function commentTargetRequiresId(targetType) {
-  return targetType !== 'general';
-}
-
-function normalizeCommentTargetId(targetType, targetId) {
-  if (!commentTargetRequiresId(targetType)) {
-    return null;
-  }
-
-  if (targetId === undefined || targetId === null || targetId === '') {
-    return null;
-  }
-
-  return mongoose.Types.ObjectId.isValid(targetId) ? targetId : null;
-}
-
-async function commentTargetExists(targetType, targetId) {
-  if (targetType === 'general') {
-    return targetId === null || targetId === undefined;
-  }
-
-  if (!targetId || !mongoose.Types.ObjectId.isValid(targetId)) {
-    return false;
-  }
-
-  const model = COMMENT_TARGET_MODELS[targetType];
-  if (!model) {
-    return false;
-  }
-
-  const target = await model.findById(targetId).select('_id');
-  return Boolean(target);
-}
-
-function commentTargetsMatch(firstTargetType, firstTargetId, secondTargetType, secondTargetId) {
-  const first = firstTargetId ? firstTargetId.toString() : null;
-  const second = secondTargetId ? secondTargetId.toString() : null;
-
-  return firstTargetType === secondTargetType && first === second;
 }
 
 function buildUserToken(user) {
@@ -164,17 +101,12 @@ function normalizePublicComment(comment, userById = new Map()) {
 
   return {
     ...plain,
-    _id:
-      typeof plain._id === 'string'
-        ? plain._id
-        : plain._id?.toString?.() || '',
+    _id: typeof plain._id === 'string' ? plain._id : plain._id?.toString?.() || '',
     userId,
     username: authorPresentation.username,
     avatar: authorPresentation.avatar,
     targetId: plain.targetId ? plain.targetId.toString() : null,
-    parentCommentId: plain.parentCommentId
-      ? plain.parentCommentId.toString()
-      : null,
+    parentCommentId: plain.parentCommentId ? plain.parentCommentId.toString() : null,
   };
 }
 
@@ -207,86 +139,8 @@ async function buildUserMapForComments(comments) {
   return new Map(users.map((user) => [user._id.toString(), user]));
 }
 
-const PUBLIC_COMMENT_PAGE_SIZE = 10;
-const PUBLIC_COMMENT_MAX_PAGE_SIZE = 50;
-
-function parseCommentPageLimit(value, defaultLimit, maxLimit) {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return defaultLimit;
-  }
-
-  return Math.min(parsed, maxLimit);
-}
-
-function parseCommentPageNumber(value) {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 1;
-  }
-
-  return parsed;
-}
-
-async function fetchCommentDescendants(rootIds) {
-  const descendants = [];
-  const seen = new Set(rootIds.map((id) => id.toString()));
-  let parentIds = rootIds;
-
-  while (parentIds.length > 0) {
-    const children = await Comment.find({
-      parentCommentId: { $in: parentIds },
-    }).sort({ createdAt: 1, _id: 1 });
-
-    parentIds = [];
-    children.forEach((child) => {
-      const childId = child._id.toString();
-      if (seen.has(childId)) {
-        return;
-      }
-
-      seen.add(childId);
-      descendants.push(child);
-      parentIds.push(child._id);
-    });
-  }
-
-  return descendants;
-}
-
-async function fetchPaginatedRootComments({
-  targetType,
-  targetId,
-  limit,
-  page,
-}) {
-  const rootFilter = {
-    targetType,
-    targetId,
-    parentCommentId: null,
-  };
-
-  const totalRoots = await Comment.countDocuments(rootFilter);
-  const totalPages = totalRoots === 0 ? 1 : Math.ceil(totalRoots / limit);
-  const safePage = Math.min(parseCommentPageNumber(page), totalPages);
-  const skip = (safePage - 1) * limit;
-
-  const rootComments = await Comment.find(rootFilter)
-    .sort({ createdAt: -1, _id: -1 })
-    .skip(skip)
-    .limit(limit);
-
-  const rootIds = rootComments.map((comment) => comment._id);
-
-  const replies = rootIds.length > 0 ? await fetchCommentDescendants(rootIds) : [];
-
-  return {
-    comments: [...rootComments, ...replies],
-    page: safePage,
-    limit,
-    totalRoots,
-    totalPages,
-  };
+function reject(res, parsed) {
+  return res.status(400).json({ message: parsed.message });
 }
 
 router.get('/altcha/challenge', altchaChallengeHandler);
@@ -300,10 +154,8 @@ router.post('/register', userRegisterRateLimit, altchaMiddleware, async (req, re
   }
 
   const { email, password, displayName } = req.body || {};
-  const normalizedEmail =
-    typeof email === 'string' ? email.trim().toLowerCase() : '';
-  const normalizedDisplayName =
-    typeof displayName === 'string' ? displayName.trim() : '';
+  const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const normalizedDisplayName = typeof displayName === 'string' ? displayName.trim() : '';
   const normalizedPassword = typeof password === 'string' ? password : '';
 
   if (!normalizedEmail || !normalizedPassword || !normalizedDisplayName) {
@@ -355,8 +207,7 @@ router.post('/login', userLoginRateLimit, altchaMiddleware, async (req, res) => 
   }
 
   const { email, password } = req.body || {};
-  const normalizedEmail =
-    typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
   const normalizedPassword = typeof password === 'string' ? password : '';
 
   if (!normalizedEmail || !normalizedPassword) {
@@ -403,23 +254,7 @@ router.get('/public/comments/donation-featured', async (req, res) => {
     PUBLIC_DONATION_FEATURED_COMMENTS_DEFAULT_LIMIT,
     PUBLIC_DONATION_FEATURED_COMMENTS_MAX_LIMIT
   );
-
-  const featuredComments = await Comment.find({
-    showInDonationPage: true,
-    parentCommentId: null,
-  }).sort({ createdAt: -1, _id: -1 });
-
-  // Mongo sorts null before numbers; comments without an explicit order
-  // should come after the ordered ones instead.
-  const orderValue = (comment) =>
-    Number.isInteger(comment.donationPageOrder) && comment.donationPageOrder > 0
-      ? comment.donationPageOrder
-      : Number.MAX_SAFE_INTEGER;
-
-  const comments = featuredComments
-    .sort((first, second) => orderValue(first) - orderValue(second))
-    .slice(0, limit);
-
+  const comments = await listFeaturedPublicComments(limit);
   const userById = await buildUserMapForComments(comments);
 
   return res.status(200).json({
@@ -428,50 +263,16 @@ router.get('/public/comments/donation-featured', async (req, res) => {
 });
 
 router.get('/public/comments', async (req, res) => {
-  const { targetType, targetId, limit, page } = req.query || {};
-  const normalizedTargetType = normalizeCommentTargetType(targetType);
-  const normalizedTargetId = normalizeCommentTargetId(
-    normalizedTargetType,
-    targetId
-  );
-  const pageLimit = parseCommentPageLimit(
-    limit,
-    PUBLIC_COMMENT_PAGE_SIZE,
-    PUBLIC_COMMENT_MAX_PAGE_SIZE
-  );
-  const pageNumber = parseCommentPageNumber(page);
-
-  if (!isValidPublicCommentTargetType(normalizedTargetType)) {
-    return res.status(400).json({
-      message: 'A valid target type is required.',
-    });
+  const parsed = parsePublicCommentListQuery(req.query);
+  if (!parsed.ok) {
+    return reject(res, parsed);
   }
 
-  if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
-    return res.status(400).json({
-      message: 'Target id is required for this target type.',
-    });
-  }
-
-  if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
-    return res.status(404).json({
-      message: 'Comment target not found.',
-    });
-  }
-
-  const pageResult = await fetchPaginatedRootComments({
-    targetType: normalizedTargetType,
-    targetId: normalizedTargetId,
-    limit: pageLimit,
-    page: pageNumber,
-  });
-
+  const pageResult = await listPublicComments(parsed.value);
   const userById = await buildUserMapForComments(pageResult.comments);
 
   return res.status(200).json({
-    comments: pageResult.comments.map((comment) =>
-      normalizePublicComment(comment, userById)
-    ),
+    comments: pageResult.comments.map((comment) => normalizePublicComment(comment, userById)),
     page: pageResult.page,
     limit: pageResult.limit,
     totalRoots: pageResult.totalRoots,
@@ -485,83 +286,15 @@ router.post(
   commentPostRateLimit,
   altchaMiddleware,
   async (req, res) => {
-    const { text, targetType, targetId, parentCommentId } = req.body || {};
-    const normalizedText = typeof text === 'string' ? text.trim() : '';
-    const normalizedTargetType = normalizeCommentTargetType(targetType);
-    const normalizedTargetId = normalizeCommentTargetId(
-      normalizedTargetType,
-      targetId
-    );
-
-    if (!normalizedText || !isValidPublicCommentTargetType(normalizedTargetType)) {
-      return res.status(400).json({
-        message: 'Text and a valid target type are required.',
-      });
+    const parsed = parseCreatePublicComment(req.body);
+    if (!parsed.ok) {
+      return reject(res, parsed);
     }
 
-    if (commentTargetRequiresId(normalizedTargetType) && !normalizedTargetId) {
-      return res.status(400).json({
-        message: 'Target id is required for this target type.',
-      });
-    }
-
-    if (!(await commentTargetExists(normalizedTargetType, normalizedTargetId))) {
-      return res.status(404).json({
-        message: 'Comment target not found.',
-      });
-    }
-
-    let normalizedParentCommentId = null;
-    if (parentCommentId !== undefined && parentCommentId !== null && parentCommentId !== '') {
-      if (!mongoose.Types.ObjectId.isValid(parentCommentId)) {
-        return res.status(400).json({
-          message: 'Invalid parent comment id.',
-        });
-      }
-
-      const parentComment = await Comment.findById(parentCommentId);
-      if (!parentComment) {
-        return res.status(404).json({
-          message: 'Parent comment not found.',
-        });
-      }
-
-      if (
-        !commentTargetsMatch(
-          parentComment.targetType,
-          parentComment.targetId,
-          normalizedTargetType,
-          normalizedTargetId
-        )
-      ) {
-        return res.status(400).json({
-          message: 'Parent comment target does not match this comment target.',
-        });
-      }
-
-      normalizedParentCommentId = parentComment._id;
-    }
-
-    try {
-      const authorPresentation = req.user.getCommentAuthorPresentation();
-      const comment = await Comment.create({
-        userId: req.user._id,
-        text: normalizedText,
-        username: authorPresentation.username,
-        avatar: authorPresentation.avatar,
-        targetType: normalizedTargetType,
-        targetId: normalizedTargetId,
-        parentCommentId: normalizedParentCommentId,
-      });
-
-      return res.status(201).json({
-        comment: normalizePublicComment(comment, new Map([[req.user._id.toString(), req.user]])),
-      });
-    } catch (error) {
-      return res.status(400).json({
-        message: error.message,
-      });
-    }
+    const comment = await createPublicComment(req.user, parsed.value);
+    return res.status(201).json({
+      comment: normalizePublicComment(comment, new Map([[req.user._id.toString(), req.user]])),
+    });
   }
 );
 
