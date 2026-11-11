@@ -39,6 +39,10 @@ function getAltcha() {
 }
 
 function altchaMiddleware(req, res, next) {
+  if (process.env.NODE_ENV === "test") {
+    return next();
+  }
+
   try {
     getAltcha().middleware()(req, res, (err) => {
       if (err) {

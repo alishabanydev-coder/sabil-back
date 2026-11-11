@@ -18,6 +18,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Test
+        run: npm ci && npm test
+
       - name: Load the deploy key
         uses: webfactory/ssh-agent@v0.9.0
         with:
