@@ -19,7 +19,9 @@ const startServer = async () => {
     app.listen(PORT, HOST, () => {
       console.log(`Server running on ${HOST}:${PORT}`);
       const { startTelegramBot } = require('./lib/telegramBot');
+      const { startYtReportScheduler } = require('./lib/ytReport/scheduler');
       startTelegramBot();
+      startYtReportScheduler();
     });
   } catch (error) {
     console.error('Failed to start server:', error.message);

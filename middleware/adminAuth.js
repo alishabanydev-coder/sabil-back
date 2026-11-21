@@ -1,11 +1,11 @@
-const jwt = require('jsonwebtoken');
-const mongoose = require('mongoose');
-const Admin = require('../models/admin.model');
+const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
+const Admin = require("../models/admin.model");
 const {
   ADMIN_ROLES,
   GRANTABLE_ADMIN_TABS,
   getSuperAdminPermissions,
-} = require('../adminPermissions');
+} = require("../adminPermissions");
 
 function getJwtSecret() {
   return process.env.ADMIN_JWT_SECRET;
@@ -29,7 +29,7 @@ function normalizePermissions(permissions = []) {
       canUpdate: true,
       canDelete: true,
       projectIds:
-        permission.tab === 'channels' && Array.isArray(permission.projectIds)
+        permission.tab === "channels" && Array.isArray(permission.projectIds)
           ? permission.projectIds.filter((projectId) =>
               mongoose.Types.ObjectId.isValid(projectId)
             )
@@ -53,7 +53,7 @@ function buildToken(admin) {
     getJwtSecret(),
     {
       subject: authAdmin.id,
-      expiresIn: '1h',
+      expiresIn: "1h",
     }
   );
 }
@@ -64,7 +64,7 @@ async function ensureBootstrapSuperAdmin() {
   const jwtSecret = process.env.ADMIN_JWT_SECRET;
 
   if (!adminUserName || !adminPassword || !jwtSecret) {
-    throw new Error('Admin auth environment variables are not configured.');
+    throw new Error("Admin auth environment variables are not configured.");
   }
 
   const normalizedUserName = adminUserName.toLowerCase();
@@ -96,20 +96,20 @@ async function ensureBootstrapSuperAdmin() {
 
 async function authenticateAdmin(req, res, next) {
   const jwtSecret = getJwtSecret();
-  const authorization = req.headers.authorization || '';
-  const token = authorization.startsWith('Bearer ')
-    ? authorization.slice('Bearer '.length)
+  const authorization = req.headers.authorization || "";
+  const token = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
     : null;
 
   if (!jwtSecret) {
     return res.status(500).json({
-      message: 'Admin JWT secret is not configured.',
+      message: "Admin JWT secret is not configured.",
     });
   }
 
   if (!token) {
     return res.status(401).json({
-      message: 'Admin authentication token is required.',
+      message: "Admin authentication token is required.",
     });
   }
 
@@ -119,7 +119,7 @@ async function authenticateAdmin(req, res, next) {
 
     if (!admin || !admin.isActive) {
       return res.status(401).json({
-        message: 'Admin account is inactive or no longer exists.',
+        message: "Admin account is inactive or no longer exists.",
       });
     }
 
@@ -127,15 +127,26 @@ async function authenticateAdmin(req, res, next) {
     return next();
   } catch {
     return res.status(401).json({
-      message: 'Invalid or expired admin token.',
+      message: "Invalid or expired admin token.",
     });
   }
+}
+
+function requireRoles(...allowedRoles) {
+  return (req, res, next) => {
+    if (!req.admin || !allowedRoles.includes(req.admin.role)) {
+      return res.status(403).json({
+        message: "Access denied for your role.",
+      });
+    }
+    return next();
+  };
 }
 
 function requireSuperAdmin(req, res, next) {
   if (req.admin?.role !== ADMIN_ROLES.SUPER_ADMIN) {
     return res.status(403).json({
-      message: 'Super admin access is required.',
+      message: "Super admin access is required.",
     });
   }
 
@@ -154,7 +165,9 @@ function getAdminPermission(admin, tab) {
     };
   }
 
-  return (admin?.permissions || []).find((permission) => permission.tab === tab);
+  return (admin?.permissions || []).find(
+    (permission) => permission.tab === tab
+  );
 }
 
 function hasChannelProjectAccess(admin, projectId) {
@@ -162,10 +175,12 @@ function hasChannelProjectAccess(admin, projectId) {
     return true;
   }
 
-  const permission = getAdminPermission(admin, 'channels');
+  const permission = getAdminPermission(admin, "channels");
   const projectIds = permission?.projectIds || [];
 
-  return projectIds.some((allowedProjectId) => allowedProjectId.toString() === projectId);
+  return projectIds.some(
+    (allowedProjectId) => allowedProjectId.toString() === projectId
+  );
 }
 
 function getAllowedChannelProjectIds(admin) {
@@ -173,8 +188,10 @@ function getAllowedChannelProjectIds(admin) {
     return null;
   }
 
-  const permission = getAdminPermission(admin, 'channels');
-  const projectIds = Array.isArray(permission?.projectIds) ? permission.projectIds : [];
+  const permission = getAdminPermission(admin, "channels");
+  const projectIds = Array.isArray(permission?.projectIds)
+    ? permission.projectIds
+    : [];
 
   return projectIds.map((projectId) => projectId.toString());
 }
@@ -184,13 +201,13 @@ function requireChannelProjectAccess(req, res, next) {
 
   if (!mongoose.Types.ObjectId.isValid(projectId)) {
     return res.status(400).json({
-      message: 'Invalid project id.',
+      message: "Invalid project id.",
     });
   }
 
   if (!hasChannelProjectAccess(req.admin, projectId)) {
     return res.status(403).json({
-      message: 'Admin access is required for this channel project.',
+      message: "Admin access is required for this channel project.",
     });
   }
 
@@ -224,7 +241,7 @@ function hasProjectScopedChannelAccessForAction(admin, action) {
     return true;
   }
 
-  const channelPermission = getAdminPermission(admin, 'channels');
+  const channelPermission = getAdminPermission(admin, "channels");
   if (!channelPermission) {
     return false;
   }
@@ -233,7 +250,8 @@ function hasProjectScopedChannelAccessForAction(admin, action) {
     channelPermission[`can${action[0].toUpperCase()}${action.slice(1)}`]
   );
   const hasProjectScope =
-    Array.isArray(channelPermission.projectIds) && channelPermission.projectIds.length > 0;
+    Array.isArray(channelPermission.projectIds) &&
+    channelPermission.projectIds.length > 0;
 
   return canDoAction && hasProjectScope;
 }
@@ -241,7 +259,7 @@ function hasProjectScopedChannelAccessForAction(admin, action) {
 function requireCommentAccess(action) {
   return (req, res, next) => {
     if (
-      hasPermission(req.admin, 'comments', action) ||
+      hasPermission(req.admin, "comments", action) ||
       hasProjectScopedChannelAccessForAction(req.admin, action)
     ) {
       return next();
@@ -265,5 +283,6 @@ module.exports = {
   normalizePermissions,
   sanitizeAdmin,
   buildToken,
+  requireRoles,
   ensureBootstrapSuperAdmin,
 };

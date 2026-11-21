@@ -1,29 +1,31 @@
 const ADMIN_ROLES = {
-  SUPER_ADMIN: 'super_admin',
-  ADMIN: 'admin',
+  SUPER_ADMIN: "super_admin",
+  ADMIN: "admin",
+  AUTHOR: "author",
+  ACCOUNTANT: "accountant",
 };
 
 const ADMIN_TABS = [
-  'mainPageLayout',
-  'appManagement',
-  'banner',
-  'breakdowns',
-  'blog',
-  'comments',
-  'projects',
-  'channels',
-  'users',
-  'socialMedia',
-  'aboutUs',
-  'admins',
-  'donation',
+  "mainPageLayout",
+  "appManagement",
+  "banner",
+  "breakdowns",
+  "blog",
+  "comments",
+  "projects",
+  "channels",
+  "users",
+  "socialMedia",
+  "aboutUs",
+  "admins",
+  "donation",
 ];
 
 const GRANTABLE_ADMIN_TABS = ADMIN_TABS.filter(
-  (tab) => !['admins', 'projects'].includes(tab)
+  (tab) => !["admins", "projects"].includes(tab)
 );
 
-const CRUD_ACTIONS = ['read', 'create', 'update', 'delete'];
+const CRUD_ACTIONS = ["read", "create", "update", "delete"];
 
 function getSuperAdminPermissions() {
   return ADMIN_TABS.map((tab) => ({

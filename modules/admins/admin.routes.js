@@ -103,7 +103,9 @@ router.post('/admins', authenticateAdmin, requireSuperAdmin, async (req, res) =>
       permissions:
         role === ADMIN_ROLES.SUPER_ADMIN
           ? getSuperAdminPermissions()
-          : normalizePermissions(permissions),
+          : role === ADMIN_ROLES.ADMIN
+            ? normalizePermissions(permissions)
+            : [],
       isActive: Boolean(isActive),
       createdBy: req.admin._id,
     });
@@ -170,6 +172,11 @@ router.patch('/admins/:id', authenticateAdmin, requireSuperAdmin, async (req, re
 
   if (updates.role === ADMIN_ROLES.SUPER_ADMIN) {
     updates.permissions = getSuperAdminPermissions();
+  } else if (
+    updates.role === ADMIN_ROLES.AUTHOR ||
+    updates.role === ADMIN_ROLES.ACCOUNTANT
+  ) {
+    updates.permissions = [];
   }
 
   try {

@@ -17,5 +17,6 @@ router.use(require('./socialMedia/socialMedia.routes'));
 router.use(require('./reactions/reaction.routes'));
 router.use(require('./donations/donation.routes'));
 router.use(require('./users/user.admin.routes'));
+router.use(require('./ytReports/ytReport.routes'));
 
 module.exports = router;
