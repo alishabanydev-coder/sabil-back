@@ -28,7 +28,6 @@ const {
   extractYouTubeVideoId,
   fetchYouTubeVideoDetailsByUrlOrId,
   fetchYouTubeVideosByIds,
-  getConnectedYouTubeAccessToken,
   listChannelShortVideoIds,
   listChannelUploadVideoIds,
 } = require("../../lib/youtube");
@@ -379,14 +378,12 @@ async function syncProjectYouTubeVideos(projectId, overwriteText) {
     discoveryError = "This project has no YouTube channel id yet, so new uploads were not added.";
   } else {
     try {
-      const accessToken = await getConnectedYouTubeAccessToken();
-      shortIds = new Set(await listChannelShortVideoIds(channelId, accessToken));
-      uploadIds = (await listChannelUploadVideoIds(channelId, accessToken)).filter(
+      shortIds = new Set(await listChannelShortVideoIds(channelId));
+      uploadIds = (await listChannelUploadVideoIds(channelId)).filter(
         (videoId) => !shortIds.has(videoId)
       );
       const details = await fetchYouTubeVideosByIds(
-        [...existingById.keys()].filter((videoId) => !shortIds.has(videoId)).concat(uploadIds),
-        accessToken
+        [...existingById.keys()].filter((videoId) => !shortIds.has(videoId)).concat(uploadIds)
       );
       detailsById = new Map(
         details.filter((item) => item.youtubeVideoId).map((item) => [item.youtubeVideoId, item])
