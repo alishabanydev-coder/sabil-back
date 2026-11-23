@@ -305,7 +305,15 @@ async function updateExistingVideoFromYouTube(video, details, overwriteText) {
     video.youtubeChannelId = details.youtubeChannelId;
   }
 
-  if (Array.isArray(details.thumbnailUrls) && details.thumbnailUrls.length > 0) {
+  const hasExistingLocalPoster = Boolean(
+    resolveStoredVideoPoster(video.thumbnail)
+  );
+
+  if (
+    (!hasExistingLocalPoster || overwriteText) &&
+    Array.isArray(details.thumbnailUrls) &&
+    details.thumbnailUrls.length > 0
+  ) {
     try {
       storedPoster = await saveYouTubePosterAsWebp(
         details.thumbnailUrls,
@@ -443,52 +451,91 @@ async function syncProjectYouTubeVideos(projectId, overwriteText) {
   if (detailsById) {
     const takeSlot = nextImportSlot(videos);
     const missingIds = uploadIds.filter((videoId) => !existingById.has(videoId)).reverse();
+    const POSTER_BATCH_SIZE = 6;
+    let posterHostUnreachable = false;
+    let posterHostErrorMessage = "";
 
-    for (const videoId of missingIds) {
-      const details = detailsById.get(videoId);
-      const title = typeof details?.title === "string" ? details.title.trim() : "";
-      if (!details || !title) {
-        failedCount += 1;
-        errors.push(`"${videoId}": YouTube did not return details for this new video.`);
+    for (let index = 0; index < missingIds.length; index += POSTER_BATCH_SIZE) {
+      const batchIds = missingIds.slice(index, index + POSTER_BATCH_SIZE);
+
+      if (posterHostUnreachable) {
+        failedCount += batchIds.length;
         continue;
       }
 
-      const { season, episode } = takeSlot();
-      let storedPoster = "";
+      const posterResults = await Promise.all(
+        batchIds.map(async (videoId) => {
+          const details = detailsById.get(videoId);
+          const title = typeof details?.title === "string" ? details.title.trim() : "";
+          if (!details || !title) {
+            return {
+              videoId,
+              details: null,
+              title: "",
+              storedPoster: "",
+              error: new Error("YouTube did not return details for this new video."),
+            };
+          }
 
-      try {
-        storedPoster = await saveYouTubePosterAsWebp(
-          details.thumbnailUrls,
-          buildYouTubePosterFilename(videoId)
-        );
-        await Video.create({
-          title: title.slice(0, 180),
-          description: (details.description || "").trim() || title,
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          thumbnail: storedPoster,
-          projectId,
-          season,
-          episode,
-          isPublished: false,
-          tags: Array.isArray(details.tags) ? details.tags : [],
-          viewCount: details.viewCount,
-          likeCount: details.likeCount,
-          commentCount: details.commentCount,
-          appViewCount: 0,
-          localLikeCount: 0,
-          saveCount: 0,
-          duration: Math.max(0, Math.round(Number(details.duration) || 0)),
-          youtubeVideoId: videoId,
-          youtubeChannelId: details.youtubeChannelId || "",
-        });
-        addedCount += 1;
-        posterSavedCount += 1;
-      } catch (error) {
-        if (storedPoster) {
-          await removePosterIfUnused(storedPoster);
+          try {
+            const storedPoster = await saveYouTubePosterAsWebp(
+              details.thumbnailUrls,
+              buildYouTubePosterFilename(videoId)
+            );
+            return { videoId, details, title, storedPoster, error: null };
+          } catch (error) {
+            return { videoId, details, title, storedPoster: "", error };
+          }
+        })
+      );
+
+      for (const item of posterResults) {
+        if (item.error) {
+          failedCount += 1;
+          const label = item.title || item.videoId;
+          errors.push(`"${label}": ${item.error.message || "Failed to add this video."}`);
+          if (item.error.isNetworkUnreachable && !posterHostUnreachable) {
+            posterHostUnreachable = true;
+            posterHostErrorMessage = item.error.message;
+          }
+          continue;
         }
-        failedCount += 1;
-        errors.push(`"${title}": ${error.message || "Failed to add this video."}`);
+
+        const { season, episode } = takeSlot();
+        try {
+          await Video.create({
+            title: item.title.slice(0, 180),
+            description: (item.details.description || "").trim() || item.title,
+            url: `https://www.youtube.com/watch?v=${item.videoId}`,
+            thumbnail: item.storedPoster,
+            projectId,
+            season,
+            episode,
+            isPublished: true,
+            tags: Array.isArray(item.details.tags) ? item.details.tags : [],
+            viewCount: item.details.viewCount,
+            likeCount: item.details.likeCount,
+            commentCount: item.details.commentCount,
+            appViewCount: 0,
+            localLikeCount: 0,
+            saveCount: 0,
+            duration: Math.max(0, Math.round(Number(item.details.duration) || 0)),
+            youtubeVideoId: item.videoId,
+            youtubeChannelId: item.details.youtubeChannelId || "",
+          });
+          addedCount += 1;
+          posterSavedCount += 1;
+        } catch (error) {
+          if (item.storedPoster) {
+            await removePosterIfUnused(item.storedPoster);
+          }
+          failedCount += 1;
+          errors.push(`"${item.title}": ${error.message || "Failed to add this video."}`);
+        }
+      }
+
+      if (posterHostUnreachable && posterHostErrorMessage) {
+        errors.unshift(posterHostErrorMessage);
       }
     }
   }
@@ -505,12 +552,20 @@ async function syncProjectYouTubeVideos(projectId, overwriteText) {
   ];
   if (addedCount > 0) {
     messageParts.push(`Added ${addedCount} new video(s).`);
+  } else if (!discoveryError && detailsById && failedCount === 0) {
+    messageParts.push(
+      shortIds.size > 0
+        ? `No new full-length videos found (${shortIds.size} Short(s) skipped).`
+        : "No new videos found on this channel."
+    );
   }
   if (droppedShortCount > 0) {
     messageParts.push(`Removed ${droppedShortCount} short(s).`);
   }
   if (discoveryError) {
     messageParts.push(discoveryError);
+  } else if (failedCount > 0 && errors.length > 0) {
+    messageParts.push(errors[0]);
   }
   if (posterSavedCount > 0) {
     messageParts.push(`Saved ${posterSavedCount} poster(s) as WebP.`);
