@@ -100,6 +100,7 @@ async function handleYtReportOAuthCallback(req, res) {
         $set: {
           authorAdminId: statePayload.adminId,
           channelTitle: profile.channelTitle,
+          customUrl: profile.customUrl || "",
           channelThumbnail: profile.channelThumbnail,
           reachJobId: reachJobId || existing?.reachJobId || "",
           refreshToken,
@@ -110,11 +111,15 @@ async function handleYtReportOAuthCallback(req, res) {
       { upsert: true, new: true }
     );
 
+    const handleLabel = profile.customUrl
+      ? ` (${profile.customUrl.startsWith("@") ? profile.customUrl : `@${profile.customUrl}`})`
+      : "";
+
     return res.status(200).send(
       renderPopupHtml({
         ok: true,
         title: profile.channelTitle,
-        message: `Connected "${profile.channelTitle}" successfully.`,
+        message: `Connected "${profile.channelTitle}"${handleLabel} successfully. To connect another channel, click Connect again and pick a different Brand Account / channel on Google's screen.`,
       })
     );
   } catch (err) {
@@ -176,6 +181,7 @@ router.get(
         _id: doc._id.toString(),
         youtubeChannelId: doc.youtubeChannelId,
         channelTitle: doc.channelTitle,
+        customUrl: doc.customUrl || "",
         channelThumbnail: doc.channelThumbnail,
         adminName: doc.authorAdminId?.name || doc.authorAdminId?.userName || "",
         updatedAt: doc.updatedAt,

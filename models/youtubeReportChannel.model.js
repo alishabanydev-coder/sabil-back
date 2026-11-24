@@ -17,6 +17,7 @@ const youtubeReportChannelSchema = new Schema(
       index: true,
     },
     channelTitle: { type: String, required: true, trim: true },
+    customUrl: { type: String, default: "", trim: true },
     channelThumbnail: { type: String, default: "", trim: true },
     reachJobId: { type: String, default: "", trim: true },
     refreshToken: { type: String, required: true, select: false },
